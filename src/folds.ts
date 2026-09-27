@@ -83,6 +83,8 @@ export interface Sector {
   folded: Mat2;
   /** Its stacking order after each fold (0 = bottom), starting with the flat sheet. */
   layers: readonly number[];
+  /** Where it lies after each fold, starting with the flat sheet; the last is `folded`. */
+  placed: readonly Mat2[];
 }
 
 function buildSectors(): Sector[] {
@@ -96,6 +98,7 @@ function buildSectors(): Sector[] {
       moves: [] as boolean[],
       folded: IDENTITY,
       layers: [0],
+      placed: [IDENTITY],
     };
   });
 
@@ -113,12 +116,56 @@ function buildSectors(): Sector[] {
       s.moves.push(moving[i]);
       s.layers.push(moving[i] ? keptTop + 1 + (movingTop - layer) : layer);
       if (moving[i]) s.folded = mul(reflection(a), s.folded);
+      s.placed.push(s.folded);
     });
   }
   return base.map(({ probe: _, ...s }) => s);
 }
 
 export const SECTORS: readonly Sector[] = buildSectors();
+
+/** Whether `p` lies inside (or on the edge of) the triangle `t`. */
+function inTriangle(p: Vec2, t: readonly Vec2[]): boolean {
+  const cross = (a: Vec2, b: Vec2) => (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
+  const d = [cross(t[0], t[1]), cross(t[1], t[2]), cross(t[2], t[0])];
+  const eps = 1e-9;
+  return d.every((x) => x >= -eps) || d.every((x) => x <= eps);
+}
+
+/** Which sides of a sector are hidden under the rest of its stack. */
+export interface Cover {
+  /** Some sector above it covers all of it, so it can't be seen from the front. */
+  above: boolean;
+  /** Some sector below it covers all of it, so it can't be seen from the back. */
+  below: boolean;
+}
+
+/**
+ * For each sector, what covers it after `stage` folds and all through the
+ * next one. Sectors folded onto the same spot make a stack, and the flap of
+ * the next fold turns over as one piece, so only sectors in the same piece
+ * count. They differ only in how far out they reach, toward the square's
+ * corners. Cuts go through every layer alike, so a hole never uncovers one.
+ */
+function coverAfter(stage: number): readonly Cover[] {
+  const placed = SECTORS.map((s) => s.triangle.map((p) => apply(s.placed[stage], p)));
+  const piece = (s: Sector) => {
+    const [, a, b] = placed[s.index];
+    const angle = Math.atan2(a[1] + b[1], a[0] + b[0]);
+    return `${angle.toFixed(3)},${stage < FOLD_ANGLES.length && s.moves[stage]}`;
+  };
+  const covers = (over: Sector, s: Sector) =>
+    piece(over) === piece(s) && placed[s.index].every((p) => inTriangle(p, placed[over.index]));
+  return SECTORS.map((s) => ({
+    above: SECTORS.some((o) => o.layers[stage] > s.layers[stage] && covers(o, s)),
+    below: SECTORS.some((o) => o.layers[stage] < s.layers[stage] && covers(o, s)),
+  }));
+}
+
+/** For each number of folds made, 0 to 4, each sector's `Cover`. */
+export const COVER: readonly (readonly Cover[])[] = Array.from({ length: FOLD_ANGLES.length + 1 }, (_, i) =>
+  coverAfter(i),
+);
 
 /**
  * Which way to turn each fold's flap about its line so that it lifts toward
