@@ -73,6 +73,14 @@ for (const method of FOLD_METHODS) {
     }
   });
 
+  test(`${method.id}: a flat sheet hides nothing; folded up, all but the outside layers are covered`, () => {
+    const { cover } = method;
+    assert.ok(cover[0].every((c) => !c.above && !c.below));
+    const seen = (side: "above" | "below") => sectors.filter((s) => !cover[4][s.index][side]).map((s) => s.layers[4]);
+    assert.ok(seen("above").includes(11) && seen("above").length < 12, `from the front: ${seen("above")}`);
+    assert.ok(seen("below").includes(0) && seen("below").length < 12, `from the back: ${seen("below")}`);
+  });
+
   test(`${method.id}: the trim opens into a regular hexagon`, () => {
     // Unfolded, the two ends of the trim land on six corners and six side midpoints.
     const corners = new Set<number>();
