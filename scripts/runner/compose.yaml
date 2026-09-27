@@ -1,0 +1,22 @@
+# Self-hosted CI runners for check.yml.
+# Start, stop and inspect them with scripts/runner/runner.sh, not by hand: it
+# hands in the token this file reads.
+name: snowflakes-runner
+services:
+  runner:
+    build: .
+    image: snowflakes-runner
+    restart: unless-stopped
+    environment:
+      GH_TOKEN: ${GH_TOKEN:-}
+      RUNNER_REPO: abvthecity/snowflakes
+      RUNNER_LABELS: snowflakes
+    deploy:
+      replicas: ${RUNNER_COUNT:-2}
+    # Chromium keeps its shared memory in /dev/shm, and Docker's default 64 MB
+    # crashes a tab rendering WebGL in software for the screenshots.
+    shm_size: 2gb
+    volumes:
+      - toolcache:/opt/hostedtoolcache
+volumes:
+  toolcache:
