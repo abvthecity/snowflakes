@@ -31,3 +31,7 @@ pnpm shot         # screenshots of each stage into shots/, in headless Chromium
 ```
 
 CI (`.github/workflows/check.yml`) runs all three and keeps the screenshots on the run. It runs on GitHub's runners, or on self-hosted Docker runners on the owner's machine: `scripts/runner/runner.sh up`, then `runner.sh local` to send CI there (`runner.sh hosted` sends it back). The runner setup is the same as abvthecity/linklater's.
+
+## Deploys
+
+`.github/workflows/deploy.yml` builds the app and ships it to the Cloudflare Pages project `snowflakes`. Every pull request gets a preview deployment and a comment with its URL; every merge to main is the production deployment. It needs the repo secrets `CLOUDFLARE_API_TOKEN` (with Cloudflare Pages: Edit) and `CLOUDFLARE_ACCOUNT_ID`, and creates the Pages project on its first run.
