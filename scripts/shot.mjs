@@ -140,17 +140,17 @@ try {
   console.log("shots/9-trimmed.png");
   // Straight cuts: click three corners, then the first again to close.
   await page.getByRole("radio", { name: "Straight" }).click();
-  for (const [x, y] of [[430, 300], [505, 330], [455, 372], [430, 300]]) await page.mouse.click(x, y);
+  for (const [x, y] of [[205, 300], [280, 330], [230, 372], [205, 300]]) await page.mouse.click(x, y);
   // A curve: a sharp corner, two dragged (smooth) points, then close with the Cut button.
   await page.getByRole("radio", { name: "Curve" }).click();
-  await page.mouse.click(440, 430);
-  for (const [x, y, dx] of [[480, 470, 30], [440, 520, -30]]) {
+  await page.mouse.click(215, 430);
+  for (const [x, y, dx] of [[255, 470, 30], [215, 520, -30]]) {
     await page.mouse.move(x, y);
     await page.mouse.down();
     await page.mouse.move(x + dx, y + 10, { steps: 2 });
     await page.mouse.up();
   }
-  await page.mouse.move(420, 480);
+  await page.mouse.move(195, 480);
   await frames(page, 3);
   await check("drawing a curve");
   await page.screenshot({ path: new URL("9b-pen-tools.png", out).pathname });

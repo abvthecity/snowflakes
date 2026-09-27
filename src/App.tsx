@@ -73,7 +73,7 @@ function CameraRig({
 }) {
   const { camera, size } = useThree();
   const moving = useRef(true);
-  const inset = useRef(0);
+  const inset = useRef("");
   const goal = useMemo(() => new THREE.Vector3(), []);
   const offset = useMemo(() => new THREE.Vector3(), []);
   useEffect(() => {
@@ -84,22 +84,26 @@ function CameraRig({
     const c = controls.current;
     const cam = camera as THREE.PerspectiveCamera;
 
-    // On a phone the panel spans the bottom of the screen: aim the view at
-    // the space above it, by shifting the frustum up by half its height.
+    // On a phone the panel spans the bottom of the screen; on a wider screen
+    // it floats on the right. Aim the view at the space the panel leaves
+    // free, by shifting the frustum by half of what the panel covers.
     const rect = panel.current?.getBoundingClientRect();
-    const covered = rect && rect.width > size.width * 0.8 ? size.height - rect.top + 8 : 0;
-    if (covered !== inset.current) {
-      inset.current = covered;
-      if (covered) cam.setViewOffset(size.width, size.height, 0, covered / 2, size.width, size.height);
+    const wide = rect && rect.width > size.width * 0.8;
+    const below = rect && wide ? size.height - rect.top + 8 : 0;
+    const right = rect && !wide && rect.left > size.width / 2 ? size.width - rect.left + 8 : 0;
+    const key = `${right},${below}`;
+    if (key !== inset.current) {
+      inset.current = key;
+      if (below || right) cam.setViewOffset(size.width, size.height, right / 2, below / 2, size.width, size.height);
       else cam.clearViewOffset();
       moving.current = true;
     }
 
     if (!moving.current || !c) return;
     const view = viewFor(stage, folds);
-    // Back off until the content fits across a narrow screen and above the panel.
-    const across = view.fit[0] / (Math.tan(HALF_FOV) * cam.aspect);
-    const up = view.fit[1] / (Math.tan(HALF_FOV) * Math.max(0.3, 1 - covered / size.height));
+    // Back off until the content fits in the space the panel leaves free.
+    const across = view.fit[0] / (Math.tan(HALF_FOV) * cam.aspect * Math.max(0.3, 1 - right / size.width));
+    const up = view.fit[1] / (Math.tan(HALF_FOV) * Math.max(0.3, 1 - below / size.height));
     offset.copy(view.position).sub(view.target);
     offset.setLength(Math.max(offset.length(), across, up));
     goal.copy(view.target).add(offset);

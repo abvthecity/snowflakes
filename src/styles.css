@@ -24,8 +24,10 @@ body {
  */
 .panel {
   position: absolute;
-  left: 24px;
-  bottom: 24px;
+  /* Floats right of centre, clear of the snowflake, which the camera frames to its left. */
+  top: 50%;
+  right: clamp(24px, 8vw, 160px);
+  transform: translateY(-50%);
   display: flex;
   flex-direction: column;
   width: min(360px, calc(100vw - 48px));
@@ -81,8 +83,10 @@ button.quiet { background: transparent; color: var(--ink); border-color: rgba(25
 button:disabled { opacity: 0.4; cursor: default; }
 @media (max-width: 520px) {
   .panel {
+    top: auto;
     left: 12px;
     right: 12px;
+    transform: none;
     bottom: calc(12px + env(safe-area-inset-bottom, 0px));
     width: auto;
     height: 252px;
