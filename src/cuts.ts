@@ -36,6 +36,11 @@ export class CutMask {
     return this.cuts.length;
   }
 
+  /** The cuts on the paper, oldest first, as outlines on the folded wedge. */
+  get outlines(): readonly (readonly Vec2[])[] {
+    return this.cuts;
+  }
+
   get isTrimmed() {
     return this.trimmed !== null;
   }
