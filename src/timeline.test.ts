@@ -42,3 +42,12 @@ test("untrusted recordings are checked", () => {
   assert.equal(parseRecording({ v: 1, events: [{ t: 5, k: "fold" }, { t: 1, k: "trim" }] }), "bad time");
   assert.equal(parseRecording({ v: 1, events: [{ t: 0, k: "explode" }] }), "bad event kind");
 });
+
+test("the paper is kept, and defaults to today's", () => {
+  const events = [{ t: 0, k: "cut", tool: "surprise", pts: loop.flat() }];
+  assert.deepEqual((parseRecording({ v: 1, events }) as { paper: unknown }).paper, { id: "classic" });
+  const paper = { id: "washi", params: { tint: "#f4efe4", weight: 60 } };
+  assert.deepEqual((parseRecording({ v: 1, paper, events }) as { paper: unknown }).paper, paper);
+  assert.equal(parseRecording({ v: 1, paper: { id: "../x" }, events }), "bad paper id");
+  assert.equal(parseRecording({ v: 1, paper: { id: "a", params: { x: {} } }, events }), "bad paper params");
+});

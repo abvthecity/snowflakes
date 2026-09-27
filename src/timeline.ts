@@ -21,8 +21,18 @@ export type TimelineEvent =
   | { t: number; k: "fold" | "trim" | "undo" | "unfold" | "refold" }
   | { t: number; k: "cut"; tool: CutKind; pts: number[] };
 
+/** Which paper the snowflake was cut from, and any settings it takes (colour, weight…). */
+export interface PaperChoice {
+  id: string;
+  params?: Record<string, string | number | boolean>;
+}
+
+/** Today's paper, and what recordings without a `paper` were cut from. */
+export const DEFAULT_PAPER: PaperChoice = { id: "classic" };
+
 export interface Recording {
   v: 1;
+  paper: PaperChoice;
   events: TimelineEvent[];
 }
 
@@ -99,10 +109,29 @@ export function finalPaper(events: readonly TimelineEvent[]) {
 
 const KINDS = new Set(["fold", "trim", "undo", "unfold", "refold", "cut"]);
 
+function parsePaper(json: unknown): PaperChoice | string {
+  if (json === undefined) return DEFAULT_PAPER;
+  if (typeof json !== "object" || json === null) return "bad paper";
+  const { id, params } = json as Partial<PaperChoice>;
+  if (typeof id !== "string" || !/^[a-z0-9-]{1,32}$/.test(id)) return "bad paper id";
+  if (params === undefined) return { id };
+  if (typeof params !== "object" || params === null || Array.isArray(params)) return "bad paper params";
+  const entries = Object.entries(params);
+  if (entries.length > 16) return "too many paper params";
+  for (const [k, v] of entries) {
+    if (!/^[A-Za-z0-9_]{1,32}$/.test(k)) return "bad paper params";
+    if (!(typeof v === "number" ? Number.isFinite(v) : typeof v === "boolean" || (typeof v === "string" && v.length <= 64)))
+      return "bad paper params";
+  }
+  return { id, params: Object.fromEntries(entries) };
+}
+
 /** Checks untrusted JSON is a recording within `LIMITS`; returns it, or a reason it isn't. */
 export function parseRecording(json: unknown): Recording | string {
   if (typeof json !== "object" || json === null) return "not an object";
   const { v, events } = json as Partial<Recording>;
+  const paper = parsePaper((json as { paper?: unknown }).paper);
+  if (typeof paper === "string") return paper;
   if (v !== 1) return "unknown version";
   if (!Array.isArray(events) || events.length === 0) return "no events";
   if (events.length > LIMITS.events) return "too many events";
@@ -124,7 +153,7 @@ export function parseRecording(json: unknown): Recording | string {
     if (points > LIMITS.points) return "too many points";
   }
   if (!events.some((e) => e.k === "cut")) return "nothing was cut";
-  return { v: 1, events: events as TimelineEvent[] };
+  return { v: 1, paper, events: events as TimelineEvent[] };
 }
 
 /** Collects events as they happen. */
@@ -132,9 +161,11 @@ export class Recorder {
   private start = performance.now();
   private offset = 0;
   events: TimelineEvent[] = [];
+  paper: PaperChoice = DEFAULT_PAPER;
 
   /** Start a new sheet of paper. */
-  reset() {
+  reset(paper: PaperChoice = DEFAULT_PAPER) {
+    this.paper = paper;
     this.events = [];
     this.offset = 0;
     this.start = performance.now();
@@ -142,6 +173,7 @@ export class Recorder {
 
   /** Carry on from a saved recording, as though its story had just happened. */
   resume(r: Recording) {
+    this.paper = r.paper;
     this.events = [...r.events];
     this.offset = (r.events[r.events.length - 1]?.t ?? 0) + 1000;
     this.start = performance.now();
@@ -156,6 +188,6 @@ export class Recorder {
   }
 
   get recording(): Recording {
-    return { v: 1, events: this.events };
+    return { v: 1, paper: this.paper, events: this.events };
   }
 }
