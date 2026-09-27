@@ -101,6 +101,45 @@ try {
   await frames(page, 2);
   await page.screenshot({ path: new URL("10-clicked-through.png", out).pathname });
   console.log("shots/10-clicked-through.png");
+
+  // The same flow on a phone, by touch: taps for the buttons and corners,
+  // finger drags for the freehand loop, a curve handle and turning the result.
+  const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  phone.on("pageerror", (e) => errors.push(e.message));
+  await phone.goto(base + "?lite");
+  const touch = await phone.context().newCDPSession(phone);
+  const drag = async (points) => {
+    const [first, ...rest] = points;
+    await touch.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: first[0], y: first[1] }] });
+    for (const [x, y] of rest) await touch.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y }] });
+    await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  };
+  const phoneShot = async (name) => {
+    await frames(phone, 3);
+    await phone.screenshot({ path: new URL(`${name}.png`, out).pathname });
+    console.log(`shots/${name}.png`);
+  };
+  await phoneShot("11-phone-start");
+  for (let i = 0; i < 4; i++) await phone.getByRole("button", { name: "Fold", exact: true }).tap({ timeout: 90_000 });
+  await phone.getByRole("button", { name: "Trim" }).tap({ timeout: 90_000 });
+  // Freehand: a loop drawn with a finger.
+  const loop = Array.from({ length: 13 }, (_, i) => [190 + 28 * Math.cos((i / 12) * 2 * Math.PI), 290 + 22 * Math.sin((i / 12) * 2 * Math.PI)]);
+  await drag(loop);
+  // Straight: tap three corners, then the first again.
+  await phone.getByRole("radio", { name: "Straight" }).tap();
+  for (const [x, y] of [[150, 380], [218, 398], [172, 440], [150, 380]]) await phone.touchscreen.tap(x, y);
+  // Curve: a tapped corner, a dragged smooth point, another corner, then Cut.
+  await phone.getByRole("radio", { name: "Curve" }).tap();
+  await phone.touchscreen.tap(185, 470);
+  await drag([[222, 492], [236, 500], [250, 508]]);
+  await phone.touchscreen.tap(195, 525);
+  await phoneShot("12-phone-cutting");
+  await phone.getByRole("button", { name: "Cut", exact: true }).tap();
+  await phone.getByRole("button", { name: "Unfold" }).tap();
+  await phone.getByRole("button", { name: "Fold back up" }).waitFor({ timeout: 90_000 });
+  // Turn the snowflake with a finger.
+  await drag([[200, 400], [230, 390], [260, 380]]);
+  await phoneShot("13-phone-snowflake");
 } finally {
   await browser.close();
   await server.close();

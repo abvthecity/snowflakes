@@ -15,8 +15,9 @@ import { outline, type Anchor } from "./penPath";
 
 export type CutTool = "freehand" | "straight" | "curve";
 
-/** How close, in paper widths, a click must land to the first corner to close the shape. */
+/** How close, in paper widths, a click must land to the first corner to close the shape; a finger gets more room. */
 const CLOSE_DISTANCE = 0.03;
+const CLOSE_DISTANCE_TOUCH = 0.06;
 const Z = 0.09;
 const RED = "#e2483d";
 
@@ -75,7 +76,8 @@ export function CuttingBoard({
       setStroke([p]);
       return;
     }
-    if (anchors.length > 2 && dist(p, anchors[0].point) < CLOSE_DISTANCE) {
+    const reach = e.pointerType === "touch" ? CLOSE_DISTANCE_TOUCH : CLOSE_DISTANCE;
+    if (anchors.length > 2 && dist(p, anchors[0].point) < reach) {
       finishPen();
       return;
     }

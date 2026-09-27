@@ -27,12 +27,25 @@ const FOLD_TIME = 0.9;
 
 /** Where the folded wedge sits, and a camera that frames it head-on for cutting. */
 const WEDGE_CENTRE = new THREE.Vector3(0, 0.68, 0);
-const VIEWS = {
-  flat: { position: new THREE.Vector3(0, -1.6, 3.6), target: new THREE.Vector3(0, 0, 0) },
-  folded: { position: new THREE.Vector3(0, -0.5, 3.1), target: new THREE.Vector3(0, 0.35, 0) },
-  cutting: { position: new THREE.Vector3(0, 0.68, 2.25), target: WEDGE_CENTRE },
-  open: { position: new THREE.Vector3(0.4, -0.6, 3.4), target: new THREE.Vector3(0, 0, 0) },
+/**
+ * Each view is a camera position and target, plus how far the content reaches
+ * across (`fit[0]`) and up (`fit[1]`) from the target, so a narrow phone
+ * screen can back the camera off until it all fits.
+ */
+interface View {
+  position: THREE.Vector3;
+  target: THREE.Vector3;
+  fit: readonly [number, number];
+}
+const VIEWS: Record<"flat" | "folded" | "cutting" | "open", View> = {
+  flat: { position: new THREE.Vector3(0, -1.6, 3.6), target: new THREE.Vector3(0, 0, 0), fit: [1.35, 1.2] },
+  folded: { position: new THREE.Vector3(0, -0.5, 3.1), target: new THREE.Vector3(0, 0.35, 0), fit: [1.1, 0.85] },
+  cutting: { position: new THREE.Vector3(0, 0.68, 2.25), target: WEDGE_CENTRE, fit: [0.45, 0.78] },
+  open: { position: new THREE.Vector3(0.4, -0.6, 3.4), target: new THREE.Vector3(0, 0, 0), fit: [1.1, 1.1] },
 };
+
+/** Half the camera's vertical field of view, in radians. */
+const HALF_FOV = (40 / 2) * (Math.PI / 180);
 
 function viewFor(stage: Stage, folds: number) {
   if (stage === "still") return STILL_FOLD! >= 3.5 ? VIEWS.cutting : VIEWS.open;
@@ -49,25 +62,51 @@ function CameraRig({
   stage,
   folds,
   controls,
+  panel,
 }: {
   stage: Stage;
   folds: number;
   controls: React.RefObject<OrbitControlsImpl | null>;
+  panel: React.RefObject<HTMLDivElement | null>;
 }) {
-  const { camera } = useThree();
+  const { camera, size } = useThree();
   const moving = useRef(true);
+  const inset = useRef(0);
+  const goal = useMemo(() => new THREE.Vector3(), []);
+  const offset = useMemo(() => new THREE.Vector3(), []);
   useEffect(() => {
     moving.current = true;
-  }, [stage, folds]);
+  }, [stage, folds, size.width, size.height]);
+
   useFrame((_, dt) => {
     const c = controls.current;
+    const cam = camera as THREE.PerspectiveCamera;
+
+    // On a phone the panel spans the bottom of the screen: aim the view at
+    // the space above it, by shifting the frustum up by half its height.
+    const rect = panel.current?.getBoundingClientRect();
+    const covered = rect && rect.width > size.width * 0.8 ? size.height - rect.top + 8 : 0;
+    if (covered !== inset.current) {
+      inset.current = covered;
+      if (covered) cam.setViewOffset(size.width, size.height, 0, covered / 2, size.width, size.height);
+      else cam.clearViewOffset();
+      moving.current = true;
+    }
+
     if (!moving.current || !c) return;
     const view = viewFor(stage, folds);
+    // Back off until the content fits across a narrow screen and above the panel.
+    const across = view.fit[0] / (Math.tan(HALF_FOV) * cam.aspect);
+    const up = view.fit[1] / (Math.tan(HALF_FOV) * Math.max(0.3, 1 - covered / size.height));
+    offset.copy(view.position).sub(view.target);
+    offset.setLength(Math.max(offset.length(), across, up));
+    goal.copy(view.target).add(offset);
+
     const k = stage === "still" ? 1 : 1 - Math.exp(-dt * 3);
-    camera.position.lerp(view.position, k);
+    camera.position.lerp(goal, k);
     c.target.lerp(view.target, k);
     c.update();
-    if (camera.position.distanceTo(view.position) < 0.002) moving.current = false;
+    if (camera.position.distanceTo(goal) < 0.002) moving.current = false;
   });
   return null;
 }
@@ -134,9 +173,9 @@ const FOLD_STEPS = [
 const STEP_COUNT = FOLD_STEPS.length + 3;
 
 const TOOLS: { id: CutTool; label: string; hint: string }[] = [
-  { id: "freehand", label: "Freehand", hint: "Press and draw a loop across the folded paper. Letting go cuts it out of all twelve layers." },
-  { id: "straight", label: "Straight", hint: "Click corner after corner, then click the first corner again (or press Cut) to cut along straight lines." },
-  { id: "curve", label: "Curve", hint: "Click for a sharp corner, or press and drag to pull a smooth curve. Click the first point again to cut." },
+  { id: "freehand", label: "Freehand", hint: "Draw a loop across the folded paper with a finger or the mouse. Letting go cuts it out of all twelve layers." },
+  { id: "straight", label: "Straight", hint: "Tap or click corner after corner, then the first corner again (or press Cut) to cut along straight lines." },
+  { id: "curve", label: "Curve", hint: "Tap for a sharp corner, or press and drag to pull a smooth curve. Tap the first point again (or press Cut) to cut." },
 ];
 
 const COPY: Record<Stage, { title: string; body: string }> = {
@@ -162,6 +201,7 @@ export function App() {
   const [anchors, setAnchors] = useState<Anchor[]>([]);
   const fold = useRef(0);
   const controls = useRef<OrbitControlsImpl>(null);
+  const panel = useRef<HTMLDivElement>(null);
 
   const foldTarget =
     stage === "folding" || stage === "trimming" || stage === "cutting" ? folds : stage === "unfolding" ? 0 : fold.current;
@@ -247,7 +287,7 @@ export function App() {
         <Snowfall />
 
         <FoldDriver fold={fold} target={foldTarget} onArrive={onArrive} />
-        <CameraRig stage={stage} folds={folds} controls={controls} />
+        <CameraRig stage={stage} folds={folds} controls={controls} panel={panel} />
         <OrbitControls
           ref={controls}
           enabled={stage === "flat" || stage === "open" || stage === "still"}
@@ -257,7 +297,7 @@ export function App() {
         />
       </Canvas>
 
-      <div className="panel">
+      <div className="panel" ref={panel}>
         {step && (
           <div className="step">
             Step {step} of {STEP_COUNT}
