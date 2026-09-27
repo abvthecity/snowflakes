@@ -55,7 +55,7 @@ export function createPaperMaterial(mask: THREE.Texture): THREE.MeshPhysicalMate
   tint.colorSpace = THREE.SRGBColorSpace;
 
   const material = new THREE.MeshPhysicalMaterial({
-    color: new THREE.Color("#fbfaf5"),
+    color: new THREE.Color("#fcfcfa"),
     map: tint,
     bumpMap: fibres,
     bumpScale: 0.6,
@@ -100,11 +100,13 @@ export function createPaperMaterial(mask: THREE.Texture): THREE.MeshPhysicalMate
         "#include <lights_fragment_end>",
         `#include <lights_fragment_end>
         // Thin paper scatters light straight through: light arriving at the
-        // back face shows on the front, warmed and softened.
+        // back face shows on the front, warmed and softened. It crosses the
+        // dyed fibres on its way, so a coloured sheet glows deeper.
+        vec3 throughTint = translucencyTint * diffuseColor.rgb;
         #if NUM_DIR_LIGHTS > 0
           for ( int i = 0; i < NUM_DIR_LIGHTS; i ++ ) {
             float through = saturate( dot( -normal, directionalLights[ i ].direction ) );
-            reflectedLight.directDiffuse += directionalLights[ i ].color * translucencyTint
+            reflectedLight.directDiffuse += directionalLights[ i ].color * throughTint
               * diffuseColor.rgb * through * translucency * RECIPROCAL_PI;
           }
         #endif
@@ -113,7 +115,7 @@ export function createPaperMaterial(mask: THREE.Texture): THREE.MeshPhysicalMate
             vec3 toLight = pointLights[ i ].position - geometryPosition;
             float fall = getDistanceAttenuation( length( toLight ), pointLights[ i ].distance, pointLights[ i ].decay );
             float through = saturate( dot( -normal, normalize( toLight ) ) );
-            reflectedLight.directDiffuse += pointLights[ i ].color * translucencyTint
+            reflectedLight.directDiffuse += pointLights[ i ].color * throughTint
               * diffuseColor.rgb * through * fall * translucency * RECIPROCAL_PI;
           }
         #endif`,
