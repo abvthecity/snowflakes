@@ -67,9 +67,9 @@ button {
 button.quiet { background: transparent; color: var(--ink); border-color: rgba(255, 255, 255, 0.25); }
 button:disabled { opacity: 0.4; cursor: default; }
 .error { color: #ffb4a8; }
-.share { margin: 0 0 10px; }
-.share input {
-  width: 100%;
+.share {
+  flex: 1 0 100%;
+  min-width: 0;
   font: inherit;
   font-size: 14px;
   padding: 7px 12px;

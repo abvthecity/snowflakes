@@ -615,7 +615,7 @@ export function App() {
       : shown.stage === "flat"
         ? FOLD_STEPS[shown.folds]
         : shown.stage === "open" && shared
-          ? { title: "A paper snowflake", body: "Someone folded and cut this. Watch how they made it, or fold it back up and keep cutting." }
+          ? { title: "A paper snowflake", body: "Someone cut this one. Replay it, or fold it back up to keep cutting." }
           : COPY[shown.stage];
   const step =
     opening || replaying
@@ -747,14 +747,18 @@ export function App() {
           {shown.stage === "cutting" && !replaying && (
             <p>{CUT_HINTS[path.closed ? "closed" : path.anchors.length ? "open" : "start"]}</p>
           )}
-          {shown.stage === "open" && !replaying && save.state === "saved" && (
-            <div className="share">
-              <input readOnly value={shareUrl(save.id)} aria-label="Link to this snowflake" onFocus={(e) => e.target.select()} />
-            </div>
-          )}
           {shown.stage === "open" && !replaying && save.state === "error" && <p className="error">Couldn't save: {save.message}</p>}
         </div>
         <div className="actions">
+          {shown.stage === "open" && !replaying && save.state === "saved" && (
+            <input
+              className="share"
+              readOnly
+              value={shareUrl(save.id)}
+              aria-label="Link to this snowflake"
+              onFocus={(e) => e.target.select()}
+            />
+          )}
           {replaying && (
             <button className="quiet" onClick={() => (skip.current = true)}>
               Skip to the end

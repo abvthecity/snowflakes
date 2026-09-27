@@ -195,10 +195,10 @@ try {
   await page.screenshot({ path: new URL("9e-severed.png", out).pathname });
   console.log("shots/9e-severed.png");
   // Reshape that last cut: drag one of its corners down a little (a "recut" in the recording).
-  await page.mouse.move(560, 302);
+  await page.mouse.move(335, 302);
   await page.mouse.down();
-  await page.mouse.move(556, 312, { steps: 2 });
-  await page.mouse.move(552, 322, { steps: 2 });
+  await page.mouse.move(331, 312, { steps: 2 });
+  await page.mouse.move(327, 322, { steps: 2 });
   await page.mouse.up();
   await page.getByRole("button", { name: "Surprise me" }).click();
   await page.getByRole("button", { name: "Unfold" }).click();
