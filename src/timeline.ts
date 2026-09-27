@@ -6,8 +6,11 @@
 // too, with times relative to the cut's start:
 //
 //   freehand  pts = [x, y, ms, x, y, ms, …], the stroke as it was drawn
+//   pen,
 //   straight,
-//   curve     pts = [x, y, hx, hy, ms, …], each pen anchor with its handle
+//   curve     pts = [x, y, hx, hy, ms, …], each anchor with its outgoing handle
+//             (zero for a corner, the incoming one mirrors it for a curve);
+//             "pen" is for a single scissors tool that mixes corners and curves
 //   surprise  pts = [x, y, x, y, …], a ready-made outline
 //
 // The functions here run in the browser and in the Pages Function that
@@ -15,7 +18,7 @@
 import type { Vec2 } from "./folds.ts";
 import { outline, type Anchor } from "./penPath.ts";
 
-export type CutKind = "freehand" | "straight" | "curve" | "surprise";
+export type CutKind = "freehand" | "pen" | "straight" | "curve" | "surprise";
 
 export type TimelineEvent =
   | { t: number; k: "fold" | "trim" | "undo" | "unfold" | "refold" }
@@ -45,7 +48,7 @@ export interface Recording {
 }
 
 /** Numbers per point in each kind of cut. */
-const STRIDE: Record<CutKind, number> = { freehand: 3, straight: 5, curve: 5, surprise: 2 };
+const STRIDE: Record<CutKind, number> = { freehand: 3, pen: 5, straight: 5, curve: 5, surprise: 2 };
 
 /** Limits a stored recording must stay within. */
 export const LIMITS = { bytes: 512 * 1024, events: 2000, points: 4000 };
