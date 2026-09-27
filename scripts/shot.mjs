@@ -84,8 +84,12 @@ const stills = [
   ["h7-half-folded", "?method=half&fold=4"],
   ["h8-half-cut", "?method=half&demo=11&fold=4"],
   ["h9-half-snowflake", "?method=half&demo=11&fold=0"],
+  // Coloured papers, lit from the front and glowing where light comes through.
+  ["7d-mint", "?demo=11&fold=0&paper=mint"],
+  ["7e-blush-folded", "?demo=11&fold=4&paper=blush"],
   // The WebGL fallback, for browsers without WebGPU.
   ["7c-webgl", "?demo=11&fold=0&webgl"],
+  ["7f-webgl-lilac", "?demo=11&fold=0&webgl&paper=lilac"],
 ];
 
 try {
@@ -104,6 +108,11 @@ try {
 
   // Click through the real flow: fold, trim, cut, unfold.
   const page = await open("?lite", { width: 900, height: 640 });
+  // Pick the paper first; the colours are only offered before the first fold.
+  await page.getByRole("radio", { name: "Butter" }).click({ timeout: 90_000 });
+  await frames(page, 3);
+  await page.screenshot({ path: new URL("7a-paper-colours.png", out).pathname });
+  console.log("shots/7a-paper-colours.png");
   // One press per fold; each waits for the last fold to finish.
   for (let i = 1; i <= 4; i++) {
     await page.getByRole("button", { name: "Fold", exact: true }).click({ timeout: 90_000 });
@@ -193,6 +202,8 @@ try {
     await phone.screenshot({ path: new URL(`${name}.png`, out).pathname });
     console.log(`shots/${name}.png`);
   };
+  await phone.locator("html[data-ready]").waitFor({ timeout: 120_000 });
+  await phone.getByRole("radio", { name: "Sky" }).tap();
   // Fold this one the other way, in half first.
   await phone.getByRole("radio", { name: "In half first" }).tap();
   await phoneShot("11-phone-start");

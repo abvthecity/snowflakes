@@ -2,7 +2,7 @@
 // `fold` runs from 0 (flat) to 4 (folded four times); fold i is part-way done
 // while `fold` is between i and i + 1.
 import { useFrame } from "@react-three/fiber";
-import { useMemo, useRef, type RefObject } from "react";
+import { useEffect, useMemo, useRef, type RefObject } from "react";
 import * as THREE from "three";
 import type { FoldMethod, Vec2 } from "./folds";
 import { webgpu } from "./gpu";
@@ -37,13 +37,20 @@ export function Paper({
   fold,
   mask,
   creased,
+  colour,
 }: {
   method: FoldMethod;
   fold: RefObject<number>;
   mask: THREE.Texture;
   creased: boolean;
+  /** The sheet's colour, an sRGB hex (see paperColours.ts). */
+  colour: string;
 }) {
   const material = useMemo(() => webgpu()?.createPaperNodeMaterial(mask) ?? createPaperMaterial(mask), [mask]);
+  useEffect(() => {
+    if ("tint" in material) material.tint.value.set(colour);
+    else material.color.set(colour);
+  }, [material, colour]);
   const { sectors, foldAngles, lift, turn } = method;
   const geometries = useMemo(() => sectors.map((s) => sectorGeometry(s.outline)), [sectors]);
   const axes = useMemo(() => foldAngles.map((a) => new THREE.Vector3(Math.cos(a), Math.sin(a), 0)), [foldAngles]);

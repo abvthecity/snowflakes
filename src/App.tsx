@@ -12,6 +12,7 @@ import { Snowfall } from "./Snowfall";
 import { Stroke } from "./Stroke";
 import { webgpu } from "./gpu";
 import { randomCuts } from "./randomCuts";
+import { PAPER_COLOURS, paperColour } from "./paperColours";
 
 type Stage = "flat" | "folding" | "trimming" | "cutting" | "unfolding" | "open" | "still";
 
@@ -24,6 +25,8 @@ const START_METHOD = foldMethod(PARAMS.get("method"));
 const DEMO = PARAMS.get("demo");
 //   &lite          skip shadows and antialiasing (software renderers, slow GPUs)
 const LITE = PARAMS.has("lite");
+//   &paper=<id>    start on that colour of paper (see paperColours.ts)
+const START_COLOUR = paperColour(PARAMS.get("paper"));
 const STILL_FOLD = PARAMS.has("fold") ? Math.min(4, Math.max(0, Number(PARAMS.get("fold")))) : null;
 
 /** Seconds per fold. */
@@ -331,6 +334,7 @@ export function App() {
   const [folds, setFolds] = useState(0);
   const [method, setMethod] = useState<FoldMethod>(START_METHOD);
   const [path, setPath] = useState<CutPath>(NO_PATH);
+  const [colour, setColour] = useState(START_COLOUR);
   const fold = useRef(0);
   const controls = useRef<OrbitControlsImpl>(null);
   const panel = useRef<HTMLDivElement>(null);
@@ -419,7 +423,13 @@ export function App() {
 
         <DragTurn enabled={stage === "flat" || stage === "open" || stage === "still"} controls={controls} held={held}>
           <Sway active={stage === "open"} held={held}>
-            <Paper method={method} fold={fold} mask={mask.texture} creased={stage !== "flat" && !(stage === "still" && cuts === 0)} />
+            <Paper
+              method={method}
+              fold={fold}
+              mask={mask.texture}
+              creased={stage !== "flat" && !(stage === "still" && cuts === 0)}
+              colour={colour.hex}
+            />
           </Sway>
         </DragTurn>
         {stage === "trimming" && <TrimGuide />}
@@ -460,14 +470,16 @@ export function App() {
             Step {step} of {STEP_COUNT}
           </div>
         )}
+        <h1>{copy.title}</h1>
+        {copy.body && <p>{copy.body}</p>}
         {choosing && (
-          <div className="tools" role="radiogroup" aria-label="Way to fold">
+          <div className="segmented" role="radiogroup" aria-label="Way to fold">
             {FOLD_METHODS.map((m) => (
               <button
                 key={m.id}
                 role="radio"
                 aria-checked={method === m}
-                className={method === m ? "tool on" : "tool"}
+                className={method === m ? "on" : undefined}
                 onClick={() => setMethod(m)}
               >
                 {m.label}
@@ -475,8 +487,26 @@ export function App() {
             ))}
           </div>
         )}
-        <h1>{copy.title}</h1>
-        {copy.body && <p>{copy.body}</p>}
+        {choosing && (
+          <div className="papers">
+            <span className="papers-label">Paper</span>
+            <div className="swatches" role="radiogroup" aria-label="Paper colour">
+              {PAPER_COLOURS.map((c) => (
+                <button
+                  key={c.id}
+                  role="radio"
+                  aria-checked={colour.id === c.id}
+                  aria-label={c.name}
+                  title={c.name}
+                  className={colour.id === c.id ? "swatch on" : "swatch"}
+                  style={{ "--swatch": c.hex } as React.CSSProperties}
+                  onClick={() => setColour(c)}
+                />
+              ))}
+            </div>
+            <span className="papers-name">{colour.name}</span>
+          </div>
+        )}
         {stage === "cutting" && (
           <p>{CUT_HINTS[path.closed ? "closed" : path.anchors.length ? "open" : "start"]}</p>
         )}
