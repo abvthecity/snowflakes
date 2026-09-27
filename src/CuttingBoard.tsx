@@ -62,7 +62,7 @@ interface Hit {
 
 type Gesture =
   | { kind: "press"; id: number; at: Vec2; x: number; y: number; hit: Hit | null }
-  | { kind: "stroke"; id: number; points: Vec2[] }
+  | { kind: "stroke"; id: number; points: Vec2[]; since: number }
   | { kind: "drag"; id: number; hit: Hit };
 
 function Dot({ at, size = 0.009, color = RED }: { at: Vec2; size?: number; color?: string }) {
@@ -184,7 +184,7 @@ export function CuttingBoard({
       } else {
         // A new drag after a finished cut starts the next shape.
         if (closed) setPath(NO_PATH);
-        gesture.current = { kind: "stroke", id: g.id, points: [g.at, p] };
+        gesture.current = { kind: "stroke", id: g.id, points: [g.at, p], since: performance.now() };
         setStroke([g.at, p]);
         return;
       }
@@ -227,7 +227,7 @@ export function CuttingBoard({
           onClose(toggleSmooth(anchors, hit.index, true));
         } else setPath({ anchors: toggleSmooth(anchors, hit.index, false), closed: false });
       } else if (!hit) {
-        const corner: Anchor = { point: g.at, handle: [0, 0] };
+        const corner: Anchor = { point: g.at, handle: [0, 0], at: performance.now() };
         setPath(closed ? { anchors: [corner], closed: false } : { anchors: [...anchors, corner], closed: false });
       }
       return;
@@ -260,6 +260,9 @@ export function CuttingBoard({
       if (base.length && dist(fitted[0].point, base[base.length - 1].point) < reach) fitted = fitted.slice(1);
       if (loops && fitted.length) fitted = fitted.slice(0, -1);
     }
+    // Spread the fitted points over the time the stroke took, so a replay draws it at the same pace.
+    const now = performance.now();
+    fitted = fitted.map((a, i) => ({ ...a, at: g.since + ((now - g.since) * (i + 1)) / fitted.length }));
     const next = [...base, ...fitted];
     if (loops && next.length > 2) close(next);
     else setPath({ anchors: next, closed: false });
