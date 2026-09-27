@@ -4,8 +4,11 @@
 // the folded layers at once, and appears 12 times when the paper opens.
 import * as THREE from "three";
 import { DEFAULT_METHOD, invert, type FoldMethod, type Vec2 } from "./folds";
+import { Pieces, drawScraps } from "./pieces";
 
 export const MASK_SIZE = 2048;
+/** Resolution of the raster that finds severed pieces: about the mask's. */
+const SCRAP_PER_UNIT = MASK_SIZE / 2;
 
 /** Flat-square coordinates ([-1, 1]², y up) to mask pixels (y down). */
 function toPixels(ctx: CanvasRenderingContext2D) {
@@ -20,6 +23,10 @@ export class CutMask {
   private cuts: Vec2[][] = [];
   private trimmed: readonly Vec2[] | null = null;
   private method: FoldMethod = DEFAULT_METHOD;
+  private scrap: HTMLCanvasElement | null = null;
+  private pieces = new Pieces(SCRAP_PER_UNIT);
+  /** Goes up on every change, for views that follow the cuts. */
+  version = 0;
 
   constructor() {
     this.canvas = document.createElement("canvas");
@@ -35,6 +42,16 @@ export class CutMask {
 
   get count() {
     return this.cuts.length;
+  }
+
+  /** The cuts on the paper, oldest first, as outlines on the folded wedge. */
+  get outlines(): readonly (readonly Vec2[])[] {
+    return this.cuts;
+  }
+
+  /** Pieces the cuts have severed, and so tossed: see pieces.ts. Null when the paper is in one piece. */
+  get scraps(): { canvas: HTMLCanvasElement; perUnit: number } | null {
+    return this.scrap && { canvas: this.scrap, perUnit: SCRAP_PER_UNIT };
   }
 
   get isTrimmed() {
@@ -54,6 +71,9 @@ export class CutMask {
     if (outline.length < 3) return;
     this.cuts.push(outline);
     this.paint(outline);
+    this.pieces.cut(outline);
+    this.toss();
+    this.version++;
     this.texture.needsUpdate = true;
   }
 
@@ -81,8 +101,21 @@ export class CutMask {
     ctx.fillStyle = "#fff";
     ctx.fillRect(0, 0, MASK_SIZE, MASK_SIZE);
     if (this.trimmed) this.paint(this.trimmed);
-    for (const c of this.cuts) this.paint(c);
+    this.pieces.reset();
+    for (const c of this.cuts) {
+      this.paint(c);
+      this.pieces.cut(c);
+    }
+    this.toss();
+    this.version++;
     this.texture.needsUpdate = true;
+  }
+
+  /** Cut away every piece that no longer hangs on to the snowflake. */
+  private toss() {
+    this.scrap = this.pieces.scraps();
+    const scrap = this.scrap;
+    if (scrap) this.paint((ctx) => drawScraps(ctx, scrap, SCRAP_PER_UNIT));
   }
 
   /**
@@ -90,7 +123,7 @@ export class CutMask {
    * to where that sector lies in the flat square and cut only within it, so a
    * cut across a fold opens into the neighbouring sector as its mirror image.
    */
-  private paint(outline: readonly Vec2[]) {
+  private paint(shape: readonly Vec2[] | ((ctx: CanvasRenderingContext2D) => void)) {
     const { ctx } = this;
     ctx.fillStyle = "#000";
     for (const s of this.method.sectors) {
@@ -103,10 +136,13 @@ export class CutMask {
       ctx.clip();
       // Canvas transform(a, b, c, d, e, f) maps (x, y) to (ax + cy, bx + dy).
       ctx.transform(a, c, b, d, 0, 0);
-      ctx.beginPath();
-      for (const [x, y] of outline) ctx.lineTo(x, y);
-      ctx.closePath();
-      ctx.fill();
+      if (typeof shape === "function") shape(ctx);
+      else {
+        ctx.beginPath();
+        for (const [x, y] of shape) ctx.lineTo(x, y);
+        ctx.closePath();
+        ctx.fill();
+      }
       ctx.restore();
     }
   }

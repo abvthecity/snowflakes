@@ -4,9 +4,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { CutMask } from "./cuts";
-import { CuttingBoard, type CutTool } from "./CuttingBoard";
+import { CuttingBoard, NO_PATH, type CutPath } from "./CuttingBoard";
 import { FOLD_METHODS, TRIM_CUT, TRIM_LINE, foldMethod, type FoldMethod } from "./folds";
-import { outline, type Anchor } from "./penPath";
+import { outline } from "./penPath";
 import { Paper } from "./Paper";
 import { Snowfall } from "./Snowfall";
 import { Stroke } from "./Stroke";
@@ -303,11 +303,13 @@ function DragTurn({
 /** Four folds, then the trim, the cuts, and unfolding. */
 const STEP_COUNT = 4 + 3;
 
-const TOOLS: { id: CutTool; label: string; hint: string }[] = [
-  { id: "freehand", label: "Freehand", hint: "Draw a loop across the folded paper with a finger or the mouse. Letting go cuts it out of all twelve layers." },
-  { id: "straight", label: "Straight", hint: "Tap or click corner after corner, then the first corner again (or press Cut) to cut along straight lines." },
-  { id: "curve", label: "Curve", hint: "Tap for a sharp corner, or press and drag to pull a smooth curve. Tap the first point again (or press Cut) to cut." },
-];
+/** What the scissors do next, by where the shape is at. */
+const CUT_HINTS = {
+  start:
+    "Tap corner after corner for straight cuts, or drag to draw. Close the shape on its first point to cut through all twelve layers.",
+  open: "Keep tapping or drawing; the faded part is what falls away. Tap the first point (or press Cut) to cut, or tap a point to round it.",
+  closed: "Drag a point or its blue handles to reshape the cut, tap a point to round or sharpen it, or start the next cut anywhere.",
+};
 
 const COPY: Record<Exclude<Stage, "flat">, { title: string; body: string }> = {
   folding: { title: "Folding…", body: "" },
@@ -327,9 +329,8 @@ export function App() {
   const [cuts, setCuts] = useState(0);
   /** How many folds the paper is heading for, 0 to 4. */
   const [folds, setFolds] = useState(0);
-  const [tool, setTool] = useState<CutTool>("freehand");
   const [method, setMethod] = useState<FoldMethod>(START_METHOD);
-  const [anchors, setAnchors] = useState<Anchor[]>([]);
+  const [path, setPath] = useState<CutPath>(NO_PATH);
   const fold = useRef(0);
   const controls = useRef<OrbitControlsImpl>(null);
   const panel = useRef<HTMLDivElement>(null);
@@ -379,6 +380,8 @@ export function App() {
             ? 7
             : null;
   const busy = stage === "folding" || stage === "unfolding";
+  /** A shape is being drawn and has not been cut yet. */
+  const open = !path.closed && path.anchors.length > 0;
 
   return (
     <div className="app">
@@ -422,11 +425,16 @@ export function App() {
         {stage === "trimming" && <TrimGuide />}
         {stage === "cutting" && (
           <CuttingBoard
-            tool={tool}
-            anchors={anchors}
-            setAnchors={setAnchors}
-            onCut={(outline) => {
-              mask.cut(outline);
+            path={path}
+            setPath={setPath}
+            mask={mask}
+            onClose={(anchors) => {
+              mask.cut(outline(anchors, true));
+              setCuts(mask.count);
+              setPath({ anchors, closed: true });
+            }}
+            onLift={() => {
+              mask.undo();
               setCuts(mask.count);
             }}
           />
@@ -470,25 +478,7 @@ export function App() {
         <h1>{copy.title}</h1>
         {copy.body && <p>{copy.body}</p>}
         {stage === "cutting" && (
-          <>
-            <div className="tools" role="radiogroup" aria-label="Scissors">
-              {TOOLS.map((t) => (
-                <button
-                  key={t.id}
-                  role="radio"
-                  aria-checked={tool === t.id}
-                  className={tool === t.id ? "tool on" : "tool"}
-                  onClick={() => {
-                    setTool(t.id);
-                    setAnchors([]);
-                  }}
-                >
-                  {t.label}
-                </button>
-              ))}
-            </div>
-            <p>{TOOLS.find((t) => t.id === tool)!.hint}</p>
-          </>
+          <p>{CUT_HINTS[path.closed ? "closed" : path.anchors.length ? "open" : "start"]}</p>
         )}
         <div className="actions">
           {stage === "flat" && (
@@ -511,31 +501,38 @@ export function App() {
               Trim
             </button>
           )}
-          {stage === "cutting" && anchors.length > 0 && (
+          {stage === "cutting" && open && (
             <>
               <button
-                disabled={anchors.length < 3}
+                disabled={path.anchors.length < 3}
                 onClick={() => {
-                  mask.cut(outline(anchors, true));
+                  mask.cut(outline(path.anchors, true));
                   setCuts(mask.count);
-                  setAnchors([]);
+                  setPath({ anchors: path.anchors, closed: true });
                 }}
               >
                 Cut
               </button>
-              <button className="quiet" onClick={() => setAnchors([])}>
+              <button className="quiet" onClick={() => setPath(NO_PATH)}>
                 Cancel
               </button>
             </>
           )}
-          {stage === "cutting" && anchors.length === 0 && (
+          {stage === "cutting" && !open && (
             <>
-              <button disabled={cuts === 0} onClick={() => setStage("unfolding")}>
+              <button
+                disabled={cuts === 0}
+                onClick={() => {
+                  setPath(NO_PATH);
+                  setStage("unfolding");
+                }}
+              >
                 Unfold
               </button>
               <button
                 className="quiet"
                 onClick={() => {
+                  setPath(NO_PATH);
                   for (const c of randomCuts(3)) mask.cut(c);
                   setCuts(mask.count);
                 }}
@@ -546,6 +543,7 @@ export function App() {
                 className="quiet"
                 disabled={cuts === 0}
                 onClick={() => {
+                  setPath(NO_PATH);
                   mask.undo();
                   setCuts(mask.count);
                 }}
