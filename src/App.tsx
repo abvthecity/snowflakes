@@ -183,6 +183,104 @@ function Sway({ active, children }: { active: boolean; children: React.ReactNode
   return <group ref={group}>{children}</group>;
 }
 
+/** The furthest a drag can turn the paper, in radians: short of edge-on, so its back never shows. */
+const MAX_TURN = 0.8;
+/** Radians of turn per screen height dragged, before the resistance sets in. */
+const TURN_GAIN = 2.4;
+
+/**
+ * Drag to turn the paper, on a rubber band: the further it turns the harder
+ * it pulls, never past `MAX_TURN`, and letting go eases it back to face the
+ * camera, the one view where a paper snowflake reads. It turns about the
+ * camera's own axes and the point the camera looks at.
+ */
+function DragTurn({
+  enabled,
+  controls,
+  children,
+}: {
+  enabled: boolean;
+  controls: React.RefObject<OrbitControlsImpl | null>;
+  children: React.ReactNode;
+}) {
+  const { gl, camera, size } = useThree();
+  const group = useRef<THREE.Group>(null);
+  const drag = useRef<{ id: number; x: number; y: number } | null>(null);
+  const pull = useRef(new THREE.Vector2());
+  const turn = useRef(new THREE.Vector2());
+  const pointers = useRef(new Set<number>());
+  const tmp = useMemo(
+    () => ({ yaw: new THREE.Quaternion(), pitch: new THREE.Quaternion(), axis: new THREE.Vector3(), pivot: new THREE.Vector3() }),
+    [],
+  );
+
+  useEffect(() => {
+    const el = gl.domElement;
+    const release = () => {
+      drag.current = null;
+      pull.current.set(0, 0);
+    };
+    const down = (e: PointerEvent) => {
+      pointers.current.add(e.pointerId);
+      // A second finger means a pinch to zoom: let go of the turn.
+      if (pointers.current.size > 1) return release();
+      if (enabled) drag.current = { id: e.pointerId, x: e.clientX, y: e.clientY };
+    };
+    const move = (e: PointerEvent) => {
+      const d = drag.current;
+      if (!d || d.id !== e.pointerId) return;
+      const scale = TURN_GAIN / size.height;
+      pull.current.set((e.clientX - d.x) * scale, (e.clientY - d.y) * scale);
+    };
+    const up = (e: PointerEvent) => {
+      pointers.current.delete(e.pointerId);
+      if (drag.current?.id === e.pointerId) release();
+    };
+    el.addEventListener("pointerdown", down);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+    return () => {
+      el.removeEventListener("pointerdown", down);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+    };
+  }, [gl, size.height, enabled]);
+
+  useEffect(() => {
+    if (!enabled) {
+      drag.current = null;
+      pull.current.set(0, 0);
+    }
+  }, [enabled]);
+
+  useFrame((_, dt) => {
+    const g = group.current;
+    if (!g) return;
+    // Resistance: the turn follows the drag at first, then tapers off toward MAX_TURN.
+    const band = (v: number) => MAX_TURN * Math.tanh(v / MAX_TURN);
+    const goalX = band(pull.current.x);
+    const goalY = band(pull.current.y);
+    // Snappy while held, a gentle glide home once let go.
+    const k = 1 - Math.exp(-dt * (drag.current ? 18 : 4));
+    turn.current.x += (goalX - turn.current.x) * k;
+    turn.current.y += (goalY - turn.current.y) * k;
+    if (!drag.current && turn.current.lengthSq() < 1e-8) turn.current.set(0, 0);
+
+    tmp.yaw.setFromAxisAngle(tmp.axis.set(0, 1, 0).applyQuaternion(camera.quaternion), turn.current.x);
+    tmp.pitch.setFromAxisAngle(tmp.axis.set(1, 0, 0).applyQuaternion(camera.quaternion), turn.current.y);
+    g.quaternion.multiplyQuaternions(tmp.yaw, tmp.pitch);
+    // Turn about the point the camera looks at, not the world origin.
+    const target = controls.current?.target;
+    if (target) tmp.pivot.copy(target);
+    else tmp.pivot.set(0, 0, 0);
+    g.position.copy(tmp.pivot).sub(tmp.axis.copy(tmp.pivot).applyQuaternion(g.quaternion));
+  });
+
+  return <group ref={group}>{children}</group>;
+}
+
 /** The four folds, one step each, in the order of the paper guide. */
 const FOLD_STEPS = [
   {
@@ -305,9 +403,11 @@ export function App() {
         {/* Behind the paper: what shines through it. */}
         <directionalLight position={[-1, 1.5, -3]} intensity={1.4} color="#ffd7a1" />
 
-        <Sway active={stage === "open"}>
-          <Paper fold={fold} mask={mask.texture} creased={stage !== "flat" && !(stage === "still" && cuts === 0)} />
-        </Sway>
+        <DragTurn enabled={stage === "flat" || stage === "open" || stage === "still"} controls={controls}>
+          <Sway active={stage === "open"}>
+            <Paper fold={fold} mask={mask.texture} creased={stage !== "flat" && !(stage === "still" && cuts === 0)} />
+          </Sway>
+        </DragTurn>
         {stage === "trimming" && <TrimGuide />}
         {stage === "cutting" && (
           <CuttingBoard
@@ -329,6 +429,7 @@ export function App() {
           ref={controls}
           enabled={stage === "flat" || stage === "open" || stage === "still"}
           enablePan={false}
+          enableRotate={false}
           minDistance={1.4}
           maxDistance={7}
         />
