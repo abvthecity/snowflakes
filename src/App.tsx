@@ -167,19 +167,129 @@ function Ready() {
   return null;
 }
 
-/** A gentle sway once the snowflake is open, as if it hung on a thread. */
-function Sway({ active, children }: { active: boolean; children: React.ReactNode }) {
+/**
+ * A gentle sway once the snowflake is open, as if it hung on a thread. It
+ * settles while `held`, so a drag's turn never adds to it.
+ */
+function Sway({ active, held, children }: { active: boolean; held: React.RefObject<boolean>; children: React.ReactNode }) {
   const group = useRef<THREE.Group>(null);
   const t = useRef(0);
   useFrame((_, dt) => {
     const g = group.current;
     if (!g) return;
     t.current += dt;
-    const amount = active ? 1 : 0;
+    const amount = active && !held.current ? 1 : 0;
     const k = 1 - Math.exp(-dt * 2);
     g.rotation.y = THREE.MathUtils.lerp(g.rotation.y, amount * Math.sin(t.current * 0.6) * 0.45, k);
     g.rotation.x = THREE.MathUtils.lerp(g.rotation.x, amount * Math.sin(t.current * 0.43) * 0.12, k);
   });
+  return <group ref={group}>{children}</group>;
+}
+
+/**
+ * The furthest a drag can turn the paper, in radians, in any direction. The
+ * paper is thin enough to vanish edge-on, and the resting views already tilt
+ * it up to about 25°, so this keeps it well short of 90° from the camera.
+ */
+const MAX_TURN = 0.6;
+/** Radians of turn per screen height dragged, before the resistance sets in. */
+const TURN_GAIN = 2.4;
+
+/**
+ * Drag to turn the paper, on a rubber band: the further it turns the harder
+ * it pulls, never past `MAX_TURN`, and letting go eases it back to face the
+ * camera, the one view where a paper snowflake reads. It turns about the
+ * camera's own axes and the point the camera looks at.
+ */
+function DragTurn({
+  enabled,
+  controls,
+  held,
+  children,
+}: {
+  enabled: boolean;
+  controls: React.RefObject<OrbitControlsImpl | null>;
+  held: React.RefObject<boolean>;
+  children: React.ReactNode;
+}) {
+  const { gl, camera, size } = useThree();
+  const group = useRef<THREE.Group>(null);
+  const drag = useRef<{ id: number; x: number; y: number } | null>(null);
+  const pull = useRef(new THREE.Vector2());
+  const turn = useRef(new THREE.Vector2());
+  const pointers = useRef(new Set<number>());
+  const tmp = useMemo(
+    () => ({ yaw: new THREE.Quaternion(), pitch: new THREE.Quaternion(), axis: new THREE.Vector3(), pivot: new THREE.Vector3() }),
+    [],
+  );
+
+  useEffect(() => {
+    const el = gl.domElement;
+    const release = () => {
+      drag.current = null;
+      pull.current.set(0, 0);
+    };
+    const down = (e: PointerEvent) => {
+      pointers.current.add(e.pointerId);
+      // A second finger means a pinch to zoom: let go of the turn.
+      if (pointers.current.size > 1) return release();
+      if (enabled) drag.current = { id: e.pointerId, x: e.clientX, y: e.clientY };
+    };
+    const move = (e: PointerEvent) => {
+      const d = drag.current;
+      if (!d || d.id !== e.pointerId) return;
+      const scale = TURN_GAIN / size.height;
+      pull.current.set((e.clientX - d.x) * scale, (e.clientY - d.y) * scale);
+    };
+    const up = (e: PointerEvent) => {
+      pointers.current.delete(e.pointerId);
+      if (drag.current?.id === e.pointerId) release();
+    };
+    el.addEventListener("pointerdown", down);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+    return () => {
+      el.removeEventListener("pointerdown", down);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+    };
+  }, [gl, size.height, enabled]);
+
+  useEffect(() => {
+    if (!enabled) {
+      drag.current = null;
+      pull.current.set(0, 0);
+    }
+  }, [enabled]);
+
+  useFrame((_, dt) => {
+    const g = group.current;
+    if (!g) return;
+    // Resistance: the turn follows the drag at first, then tapers off toward MAX_TURN.
+    // Capped on the drag's length, not per axis, so a diagonal can't add up past the limit.
+    const reach = pull.current.length();
+    const band = reach > 1e-6 ? (MAX_TURN * Math.tanh(reach / MAX_TURN)) / reach : 1;
+    const goalX = pull.current.x * band;
+    const goalY = pull.current.y * band;
+    // Snappy while held, a gentle glide home once let go.
+    held.current = drag.current !== null;
+    const k = 1 - Math.exp(-dt * (drag.current ? 18 : 4));
+    turn.current.x += (goalX - turn.current.x) * k;
+    turn.current.y += (goalY - turn.current.y) * k;
+    if (!drag.current && turn.current.lengthSq() < 1e-8) turn.current.set(0, 0);
+
+    tmp.yaw.setFromAxisAngle(tmp.axis.set(0, 1, 0).applyQuaternion(camera.quaternion), turn.current.x);
+    tmp.pitch.setFromAxisAngle(tmp.axis.set(1, 0, 0).applyQuaternion(camera.quaternion), turn.current.y);
+    g.quaternion.multiplyQuaternions(tmp.yaw, tmp.pitch);
+    // Turn about the point the camera looks at, not the world origin.
+    const target = controls.current?.target;
+    if (target) tmp.pivot.copy(target);
+    else tmp.pivot.set(0, 0, 0);
+    g.position.copy(tmp.pivot).sub(tmp.axis.copy(tmp.pivot).applyQuaternion(g.quaternion));
+  });
+
   return <group ref={group}>{children}</group>;
 }
 
@@ -229,6 +339,7 @@ export function App() {
   const fold = useRef(0);
   const controls = useRef<OrbitControlsImpl>(null);
   const panel = useRef<HTMLDivElement>(null);
+  const held = useRef(false);
 
   const foldTarget =
     stage === "folding" || stage === "trimming" || stage === "cutting" ? folds : stage === "unfolding" ? 0 : fold.current;
@@ -305,9 +416,11 @@ export function App() {
         {/* Behind the paper: what shines through it. */}
         <directionalLight position={[-1, 1.5, -3]} intensity={1.4} color="#ffd7a1" />
 
-        <Sway active={stage === "open"}>
-          <Paper fold={fold} mask={mask.texture} creased={stage !== "flat" && !(stage === "still" && cuts === 0)} />
-        </Sway>
+        <DragTurn enabled={stage === "flat" || stage === "open" || stage === "still"} controls={controls} held={held}>
+          <Sway active={stage === "open"} held={held}>
+            <Paper fold={fold} mask={mask.texture} creased={stage !== "flat" && !(stage === "still" && cuts === 0)} />
+          </Sway>
+        </DragTurn>
         {stage === "trimming" && <TrimGuide />}
         {stage === "cutting" && (
           <CuttingBoard
@@ -329,6 +442,7 @@ export function App() {
           ref={controls}
           enabled={stage === "flat" || stage === "open" || stage === "still"}
           enablePan={false}
+          enableRotate={false}
           minDistance={1.4}
           maxDistance={7}
         />
