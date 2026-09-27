@@ -65,6 +65,27 @@ const frames = (page, n) =>
     n,
   );
 
+/**
+ * The panel must keep one size and place through every step, so the screen
+ * never jumps, and its text must fit without scrolling. Records a problem
+ * when the panel's box differs from the first one seen on this page.
+ */
+const steady = (page, label) => {
+  let first = null;
+  return async (step) => {
+    await page.locator(".panel").waitFor();
+    const box = await page.evaluate(() => {
+      const p = document.querySelector(".panel");
+      const b = p.querySelector(".body");
+      const r = p.getBoundingClientRect();
+      return { box: [r.x, r.y, r.width, r.height].map(Math.round).join(","), overflow: b.scrollHeight > b.clientHeight + 1 };
+    });
+    first ??= box.box;
+    if (box.box !== first) errors.push(`${label}: panel moved at ${step} (${box.box}, was ${first})`);
+    if (box.overflow) errors.push(`${label}: panel text overflows at ${step}`);
+  };
+};
+
 const stills = [
   ["1-flat", "?fold=0"],
   ["2-first-fold", "?fold=0.55"],
@@ -94,9 +115,12 @@ try {
 
   // Click through the real flow: fold, trim, cut, unfold.
   const page = await open("?lite", { width: 900, height: 640 });
+  const check = steady(page, "desktop");
   // One press per fold; each waits for the last fold to finish.
   for (let i = 1; i <= 4; i++) {
+    await check(`fold ${i}`);
     await page.getByRole("button", { name: "Fold", exact: true }).click({ timeout: 90_000 });
+    await check(`folding ${i}`);
     if (i === 2) {
       await page.getByText("Step 3 of 7").waitFor({ timeout: 90_000 });
       await frames(page, 3);
@@ -108,8 +132,10 @@ try {
   await frames(page, 3);
   await page.screenshot({ path: new URL("8-trim-guide.png", out).pathname });
   console.log("shots/8-trim-guide.png");
+  await check("trim");
   await page.getByRole("button", { name: "Trim" }).click();
   await frames(page, 3);
+  await check("cut");
   await page.screenshot({ path: new URL("9-trimmed.png", out).pathname });
   console.log("shots/9-trimmed.png");
   // Straight cuts: click three corners, then the first again to close.
@@ -126,13 +152,16 @@ try {
   }
   await page.mouse.move(420, 480);
   await frames(page, 3);
+  await check("drawing a curve");
   await page.screenshot({ path: new URL("9b-pen-tools.png", out).pathname });
   console.log("shots/9b-pen-tools.png");
   await page.getByRole("button", { name: "Cut", exact: true }).click();
   await page.getByRole("button", { name: "Surprise me" }).click();
   await page.getByRole("button", { name: "Unfold" }).click();
+  await check("unfolding");
   await page.getByRole("button", { name: "Fold back up" }).waitFor({ timeout: 90_000 });
   await frames(page, 2);
+  await check("open");
   await page.screenshot({ path: new URL("10-clicked-through.png", out).pathname });
   console.log("shots/10-clicked-through.png");
 
@@ -154,9 +183,17 @@ try {
     await phone.screenshot({ path: new URL(`${name}.png`, out).pathname });
     console.log(`shots/${name}.png`);
   };
+  const phoneCheck = steady(phone, "phone");
   await phoneShot("11-phone-start");
-  for (let i = 0; i < 4; i++) await phone.getByRole("button", { name: "Fold", exact: true }).tap({ timeout: 90_000 });
-  await phone.getByRole("button", { name: "Trim" }).tap({ timeout: 90_000 });
+  for (let i = 1; i <= 4; i++) {
+    await phoneCheck(`fold ${i}`);
+    await phone.getByRole("button", { name: "Fold", exact: true }).tap({ timeout: 90_000 });
+    await phoneCheck(`folding ${i}`);
+  }
+  await phone.getByRole("button", { name: "Trim" }).waitFor({ timeout: 90_000 });
+  await phoneCheck("trim");
+  await phone.getByRole("button", { name: "Trim" }).tap();
+  await phoneCheck("cut");
   // Freehand: a loop drawn with a finger.
   const loop = Array.from({ length: 13 }, (_, i) => [190 + 28 * Math.cos((i / 12) * 2 * Math.PI), 290 + 22 * Math.sin((i / 12) * 2 * Math.PI)]);
   await drag(loop);
@@ -169,9 +206,12 @@ try {
   await drag([[222, 492], [236, 500], [250, 508]]);
   await phone.touchscreen.tap(195, 525);
   await phoneShot("12-phone-cutting");
+  await phoneCheck("drawing a curve");
   await phone.getByRole("button", { name: "Cut", exact: true }).tap();
   await phone.getByRole("button", { name: "Unfold" }).tap();
+  await phoneCheck("unfolding");
   await phone.getByRole("button", { name: "Fold back up" }).waitFor({ timeout: 90_000 });
+  await phoneCheck("open");
   // Turn the snowflake with a finger.
   await drag([[200, 400], [230, 390], [260, 380]]);
   await phoneShot("13-phone-snowflake");

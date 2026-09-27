@@ -16,17 +16,30 @@ body {
 }
 .app { position: fixed; inset: 0; }
 .app canvas { touch-action: none; }
+/*
+ * The panel keeps one size through every step, so neither it nor the view
+ * framed around it moves when its text or buttons change: a fixed width and
+ * height, the text in between taking up the slack and the buttons pinned to
+ * the bottom.
+ */
 .panel {
   position: absolute;
   left: 24px;
   bottom: 24px;
-  max-width: min(360px, calc(100vw - 48px));
+  display: flex;
+  flex-direction: column;
+  width: min(360px, calc(100vw - 48px));
+  height: 272px;
+  min-width: 0;
+  margin: 0;
   padding: 18px 20px;
   border-radius: 14px;
   background: rgba(12, 16, 39, 0.55);
   backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
+.panel .body { flex: 1; min-height: 0; overflow-y: auto; }
+.panel .actions { flex: none; margin-top: auto; }
 .panel .step {
   margin: 0 0 4px;
   color: var(--muted);
@@ -66,13 +79,13 @@ button {
 }
 button.quiet { background: transparent; color: var(--ink); border-color: rgba(255, 255, 255, 0.25); }
 button:disabled { opacity: 0.4; cursor: default; }
-.hint { color: var(--muted); }
 @media (max-width: 520px) {
   .panel {
     left: 12px;
     right: 12px;
     bottom: calc(12px + env(safe-area-inset-bottom, 0px));
-    max-width: none;
+    width: auto;
+    height: 252px;
     padding: 14px 16px;
   }
   .panel h1 { font-size: 19px; }

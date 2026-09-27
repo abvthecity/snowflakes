@@ -69,7 +69,7 @@ function CameraRig({
   stage: Stage;
   folds: number;
   controls: React.RefObject<OrbitControlsImpl | null>;
-  panel: React.RefObject<HTMLDivElement | null>;
+  panel: React.RefObject<HTMLElement | null>;
 }) {
   const { camera, size } = useThree();
   const moving = useRef(true);
@@ -207,13 +207,13 @@ const TOOLS: { id: CutTool; label: string; hint: string }[] = [
 
 const COPY: Record<Stage, { title: string; body: string }> = {
   flat: FOLD_STEPS[0],
-  folding: { title: "Folding…", body: "" },
+  folding: { title: "", body: "" },
   trimming: {
     title: "Trim the top",
     body: "Slice straight across the top of the folded paper, along the dashed line. That is what opens into a hexagon instead of a square.",
   },
   cutting: { title: "Cut", body: "" },
-  unfolding: { title: "Unfolding…", body: "" },
+  unfolding: { title: "", body: "" },
   still: { title: "Paper snowflake", body: "" },
   open: { title: "Your snowflake", body: "Drag to turn it. Fold it back up to keep cutting." },
 };
@@ -228,7 +228,7 @@ export function App() {
   const [anchors, setAnchors] = useState<Anchor[]>([]);
   const fold = useRef(0);
   const controls = useRef<OrbitControlsImpl>(null);
-  const panel = useRef<HTMLDivElement>(null);
+  const panel = useRef<HTMLFieldSetElement>(null);
 
   const foldTarget =
     stage === "folding" || stage === "trimming" || stage === "cutting" ? folds : stage === "unfolding" ? 0 : fold.current;
@@ -258,18 +258,25 @@ export function App() {
     });
   };
 
-  const copy = stage === "flat" ? FOLD_STEPS[folds] : COPY[stage];
+  // While the paper folds or unfolds, the panel keeps showing the step that
+  // started it, with its buttons disabled, rather than swapping to a
+  // placeholder and back: the panel, and the view framed above it, hold still.
+  const busy = stage === "folding" || stage === "unfolding";
+  const settled = useRef({ stage, folds });
+  if (!busy) settled.current = { stage, folds };
+  const shown = busy ? settled.current : { stage, folds };
+
+  const copy = shown.stage === "flat" ? FOLD_STEPS[shown.folds] : COPY[shown.stage];
   const step =
-    stage === "flat"
-      ? folds + 1
-      : stage === "trimming"
+    shown.stage === "flat"
+      ? shown.folds + 1
+      : shown.stage === "trimming"
         ? 5
-        : stage === "cutting"
+        : shown.stage === "cutting"
           ? 6
-          : stage === "open" || stage === "unfolding"
+          : shown.stage === "open"
             ? 7
             : null;
-  const busy = stage === "folding" || stage === "unfolding";
 
   return (
     <div className="app">
@@ -334,37 +341,35 @@ export function App() {
         />
       </Canvas>
 
-      <div className="panel" ref={panel}>
-        {step && (
-          <div className="step">
-            Step {step} of {STEP_COUNT}
-          </div>
-        )}
+      <fieldset className="panel" ref={panel} disabled={busy} aria-busy={busy}>
+        <div className="step">{step ? `Step ${step} of ${STEP_COUNT}` : "\u00a0"}</div>
         <h1>{copy.title}</h1>
-        {copy.body && <p>{copy.body}</p>}
-        {stage === "cutting" && (
-          <>
-            <div className="tools" role="radiogroup" aria-label="Scissors">
-              {TOOLS.map((t) => (
-                <button
-                  key={t.id}
-                  role="radio"
-                  aria-checked={tool === t.id}
-                  className={tool === t.id ? "tool on" : "tool"}
-                  onClick={() => {
-                    setTool(t.id);
-                    setAnchors([]);
-                  }}
-                >
-                  {t.label}
-                </button>
-              ))}
-            </div>
-            <p>{TOOLS.find((t) => t.id === tool)!.hint}</p>
-          </>
-        )}
+        <div className="body">
+          {copy.body && <p>{copy.body}</p>}
+          {shown.stage === "cutting" && (
+            <>
+              <div className="tools" role="radiogroup" aria-label="Scissors">
+                {TOOLS.map((t) => (
+                  <button
+                    key={t.id}
+                    role="radio"
+                    aria-checked={tool === t.id}
+                    className={tool === t.id ? "tool on" : "tool"}
+                    onClick={() => {
+                      setTool(t.id);
+                      setAnchors([]);
+                    }}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+              <p>{TOOLS.find((t) => t.id === tool)!.hint}</p>
+            </>
+          )}
+        </div>
         <div className="actions">
-          {stage === "flat" && (
+          {shown.stage === "flat" && (
             <button
               onClick={() => {
                 setFolds(folds + 1);
@@ -374,7 +379,7 @@ export function App() {
               Fold
             </button>
           )}
-          {stage === "trimming" && (
+          {shown.stage === "trimming" && (
             <button
               onClick={() => {
                 mask.trim(TRIM_CUT);
@@ -384,7 +389,7 @@ export function App() {
               Trim
             </button>
           )}
-          {stage === "cutting" && anchors.length > 0 && (
+          {shown.stage === "cutting" && anchors.length > 0 && (
             <>
               <button
                 disabled={anchors.length < 3}
@@ -401,7 +406,7 @@ export function App() {
               </button>
             </>
           )}
-          {stage === "cutting" && anchors.length === 0 && (
+          {shown.stage === "cutting" && anchors.length === 0 && (
             <>
               <button disabled={cuts === 0} onClick={() => setStage("unfolding")}>
                 Unfold
@@ -427,7 +432,7 @@ export function App() {
               </button>
             </>
           )}
-          {stage === "open" && (
+          {shown.stage === "open" && (
             <>
               <button
                 onClick={() => {
@@ -451,9 +456,8 @@ export function App() {
               </button>
             </>
           )}
-          {busy && <span className="hint">…</span>}
         </div>
-      </div>
+      </fieldset>
     </div>
   );
 }
