@@ -25,6 +25,12 @@ const START_METHOD = foldMethod(PARAMS.get("method"));
 const DEMO = PARAMS.get("demo");
 //   &lite          skip shadows and antialiasing (software renderers, slow GPUs)
 const LITE = PARAMS.has("lite");
+/**
+ * The most canvas pixels per CSS pixel: the display's own, so edges stay sharp
+ * on high-density screens, but no more than 2 on phones, where a third
+ * density would more than double the paper shader's work for little to see.
+ */
+const MAX_DPR = matchMedia("(pointer: coarse)").matches ? 2 : 3;
 //   &paper=<id>    start on that colour of paper (see paperColours.ts)
 const START_COLOUR = paperColour(PARAMS.get("paper"));
 const STILL_FOLD = PARAMS.has("fold") ? Math.min(4, Math.max(0, Number(PARAMS.get("fold")))) : null;
@@ -402,7 +408,7 @@ export function App() {
     <div className="app">
       <Canvas
         shadows={!LITE}
-        dpr={LITE ? 1 : [1, 2]}
+        dpr={LITE ? 1 : [1, MAX_DPR]}
         gl={(defaults) => {
           const kit = webgpu();
           // Fiber awaits a renderer that needs async setup, though its types don't say so.

@@ -15,6 +15,7 @@ import {
   mix,
   normalView,
   positionView,
+  select,
   sign,
   texture,
   uniform,
@@ -66,10 +67,15 @@ class PaperMaterial extends THREE.MeshPhysicalNodeMaterial {
 
 export type PaperNodeMaterial = PaperMaterial;
 
+/**
+ * The paper is opaque and stops half a pixel inside each cut; the pixel
+ * straddling the cut is left to the fringe (createFringeNodeMaterial), which
+ * blends it over whatever lies behind, so the outlines come out smooth. Alpha
+ * to coverage would do both in one pass, but GPUs dither it, and on a sharp
+ * display the dither shows as speckles along every edge.
+ */
 export function createPaperNodeMaterial(mask: THREE.Texture): PaperNodeMaterial {
-  // Alpha to coverage turns the mask's edge into multisample coverage, so the
-  // cut outlines come out as smooth as the sheet's own edges instead of stepped.
-  const material = new PaperMaterial({ side: THREE.DoubleSide, alphaTest: 0.5, alphaToCoverage: true });
+  const material = new PaperMaterial({ side: THREE.DoubleSide });
   const { crease, tint } = material;
 
   // Where this point lies on the flat sheet, and how much sheet one pixel covers.
@@ -81,11 +87,9 @@ export function createPaperNodeMaterial(mask: THREE.Texture): PaperNodeMaterial 
   const albedo = surface.z;
   const shade = surface.w;
 
-  // Three ramps alpha to coverage from alphaTest up across one pixel's worth
-  // of change; start it half a pixel early, so the ramp is centred on the cut.
-  const cut = texture(mask, uv()).r;
+  const { cut, rim } = cutEdge(mask);
   material.opacityNode = cut;
-  material.alphaTestNode = float(0.5).sub(fwidth(cut).mul(0.5));
+  material.alphaTestNode = float(0.5).add(rim);
 
   // The sheet's colour, mottled by the pulp; creases hold a little shadow in their furrows.
   material.colorNode = tint.mul(albedo).mul(float(1).sub(shade.mul(0.07)));
@@ -111,5 +115,27 @@ export function createPaperNodeMaterial(mask: THREE.Texture): PaperNodeMaterial 
   // crosses the dyed fibres on its way, so a coloured sheet glows deeper.
   material.transmittanceNode = vec3(1.0, 0.95, 0.86).mul(mix(float(0.55), float(0.3), formation)).mul(tint);
 
+  return material;
+}
+
+/** The mask at this point, and half the change in it across one pixel. */
+function cutEdge(mask: THREE.Texture) {
+  const cut = texture(mask, uv()).r;
+  return { cut, rim: fwidth(cut).mul(0.5) };
+}
+
+/**
+ * The soft outer pixel of every cut edge: how much of the pixel the paper
+ * covers, where the paper material leaves it out. Shaded plainly, since it is
+ * never more than a pixel wide, and drawn after everything opaque, so it
+ * blends over whatever lies behind the cut.
+ */
+export function createFringeNodeMaterial(mask: THREE.Texture) {
+  const material = new THREE.MeshLambertNodeMaterial({ side: THREE.DoubleSide, transparent: true, depthWrite: false });
+  const { cut, rim } = cutEdge(mask);
+  // The mask ramps across the cut; stretched to span one pixel, centred on the cut.
+  const cover = cut.sub(0.5).div(rim.mul(2).max(1e-5)).add(0.5).clamp();
+  material.opacityNode = select(cut.greaterThanEqual(float(0.5).add(rim)), float(0), cover);
+  material.alphaTest = 0.002;
   return material;
 }
