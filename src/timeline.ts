@@ -33,6 +33,12 @@ export interface PaperChoice {
 /** Today's paper, and what recordings without a `paper` were cut from. */
 export const DEFAULT_PAPER: PaperChoice = { id: "classic" };
 
+/** The paper's colour, saved as `params.color` ("#rrggbb"); white when it wasn't chosen. */
+export function paperColor(paper: PaperChoice): string {
+  const c = paper.params?.color;
+  return typeof c === "string" && /^#[0-9a-f]{6}$/i.test(c) ? c : "#ffffff";
+}
+
 /**
  * How the paper was folded: "diagonal" is today's corner-to-corner, half, then
  * thirds; other methods (such as a square first, then a cone) get their own ids.
