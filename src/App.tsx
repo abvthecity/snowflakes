@@ -167,15 +167,18 @@ function Ready() {
   return null;
 }
 
-/** A gentle sway once the snowflake is open, as if it hung on a thread. */
-function Sway({ active, children }: { active: boolean; children: React.ReactNode }) {
+/**
+ * A gentle sway once the snowflake is open, as if it hung on a thread. It
+ * settles while `held`, so a drag's turn never adds to it.
+ */
+function Sway({ active, held, children }: { active: boolean; held: React.RefObject<boolean>; children: React.ReactNode }) {
   const group = useRef<THREE.Group>(null);
   const t = useRef(0);
   useFrame((_, dt) => {
     const g = group.current;
     if (!g) return;
     t.current += dt;
-    const amount = active ? 1 : 0;
+    const amount = active && !held.current ? 1 : 0;
     const k = 1 - Math.exp(-dt * 2);
     g.rotation.y = THREE.MathUtils.lerp(g.rotation.y, amount * Math.sin(t.current * 0.6) * 0.45, k);
     g.rotation.x = THREE.MathUtils.lerp(g.rotation.x, amount * Math.sin(t.current * 0.43) * 0.12, k);
@@ -183,8 +186,12 @@ function Sway({ active, children }: { active: boolean; children: React.ReactNode
   return <group ref={group}>{children}</group>;
 }
 
-/** The furthest a drag can turn the paper, in radians: short of edge-on, so its back never shows. */
-const MAX_TURN = 0.8;
+/**
+ * The furthest a drag can turn the paper, in radians, in any direction. The
+ * paper is thin enough to vanish edge-on, and the resting views already tilt
+ * it up to about 25°, so this keeps it well short of 90° from the camera.
+ */
+const MAX_TURN = 0.6;
 /** Radians of turn per screen height dragged, before the resistance sets in. */
 const TURN_GAIN = 2.4;
 
@@ -197,10 +204,12 @@ const TURN_GAIN = 2.4;
 function DragTurn({
   enabled,
   controls,
+  held,
   children,
 }: {
   enabled: boolean;
   controls: React.RefObject<OrbitControlsImpl | null>;
+  held: React.RefObject<boolean>;
   children: React.ReactNode;
 }) {
   const { gl, camera, size } = useThree();
@@ -259,10 +268,13 @@ function DragTurn({
     const g = group.current;
     if (!g) return;
     // Resistance: the turn follows the drag at first, then tapers off toward MAX_TURN.
-    const band = (v: number) => MAX_TURN * Math.tanh(v / MAX_TURN);
-    const goalX = band(pull.current.x);
-    const goalY = band(pull.current.y);
+    // Capped on the drag's length, not per axis, so a diagonal can't add up past the limit.
+    const reach = pull.current.length();
+    const band = reach > 1e-6 ? (MAX_TURN * Math.tanh(reach / MAX_TURN)) / reach : 1;
+    const goalX = pull.current.x * band;
+    const goalY = pull.current.y * band;
     // Snappy while held, a gentle glide home once let go.
+    held.current = drag.current !== null;
     const k = 1 - Math.exp(-dt * (drag.current ? 18 : 4));
     turn.current.x += (goalX - turn.current.x) * k;
     turn.current.y += (goalY - turn.current.y) * k;
@@ -327,6 +339,7 @@ export function App() {
   const fold = useRef(0);
   const controls = useRef<OrbitControlsImpl>(null);
   const panel = useRef<HTMLDivElement>(null);
+  const held = useRef(false);
 
   const foldTarget =
     stage === "folding" || stage === "trimming" || stage === "cutting" ? folds : stage === "unfolding" ? 0 : fold.current;
@@ -403,8 +416,8 @@ export function App() {
         {/* Behind the paper: what shines through it. */}
         <directionalLight position={[-1, 1.5, -3]} intensity={1.4} color="#ffd7a1" />
 
-        <DragTurn enabled={stage === "flat" || stage === "open" || stage === "still"} controls={controls}>
-          <Sway active={stage === "open"}>
+        <DragTurn enabled={stage === "flat" || stage === "open" || stage === "still"} controls={controls} held={held}>
+          <Sway active={stage === "open"} held={held}>
             <Paper fold={fold} mask={mask.texture} creased={stage !== "flat" && !(stage === "still" && cuts === 0)} />
           </Sway>
         </DragTurn>
