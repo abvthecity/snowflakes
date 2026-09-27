@@ -48,6 +48,7 @@ export function Paper({ fold, mask, creased }: { fold: RefObject<number>; mask: 
         color: new THREE.Color("#fbfaf5"),
         alphaMap: mask,
         alphaTest: 0.5,
+        alphaToCoverage: true,
         side: THREE.DoubleSide,
       }),
     [mask],
