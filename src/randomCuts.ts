@@ -1,11 +1,10 @@
-// Sample cut patterns for "Surprise me" and the ?demo URL: notches along the
-// folds and the open edge, and a few holes, all within the folded wedge.
-import type { Vec2 } from "./folds";
+// Sample cut patterns for "Surprise me" and the ?demo URL: points along the
+// trimmed top, notches in from both folds, and a few holes, all within the
+// folded 75°–105° wedge.
+import { TRIM_LINE, WEDGE, polar, type Vec2 } from "./folds";
 
 const DEG = Math.PI / 180;
-
-/** A point in the wedge, by distance from the centre and angle (90°–112.5°). */
-const polar = (r: number, deg: number): Vec2 => [r * Math.cos(deg * DEG), r * Math.sin(deg * DEG)];
+const [RIGHT, LEFT] = WEDGE;
 
 function mulberry32(seed: number) {
   return () => {
@@ -26,56 +25,50 @@ function ellipse(cx: number, cy: number, rx: number, ry: number, rot: number, n 
   });
 }
 
+/** A triangular notch cut in from the fold at angle `edge`, centred `r` from the middle. */
+function foldNotch(edge: number, inward: number, r: number, depth: number, width: number, lean: number): Vec2[] {
+  const outside = edge - inward * 8 * DEG;
+  return [polar(r - width, outside), polar(r + lean, edge + inward * depth), polar(r + width, outside)];
+}
+
 export function randomCuts(seed = Math.floor(Math.random() * 1e9)): Vec2[][] {
   const rand = mulberry32(seed);
   const cuts: Vec2[][] = [];
 
-  // Trim the uneven top of the folded stack along a scalloped or pointed edge.
-  const top = 0.82 + rand() * 0.12;
-  const peaks = 2 + Math.floor(rand() * 3);
-  const edge: Vec2[] = [[0.2, 2]];
-  for (let i = 0; i <= peaks * 2; i++) {
-    const x = 0.02 - (i / (peaks * 2)) * 0.62;
-    const y = top + (i % 2 ? -0.1 - rand() * 0.08 : 0);
-    edge.push([x, y]);
-  }
-  edge.push([-0.8, 2]);
-  cuts.push(edge);
-
-  // Notches cut in from the fold at 90° (the right-hand edge of the wedge).
-  const notches = 2 + Math.floor(rand() * 3);
-  for (let i = 0; i < notches; i++) {
-    const r = 0.18 + (i + rand() * 0.6) * (0.62 / notches);
-    const depth = 0.05 + rand() * 0.09;
-    const w = 0.03 + rand() * 0.05;
-    cuts.push([
-      [0.1, r - w],
-      [-depth, r + (rand() - 0.5) * 0.04],
-      [0.1, r + w],
-    ]);
+  // Points along the trimmed top: V-shaped bites down from the trim line.
+  const [p, q] = TRIM_LINE;
+  const along = [q[0] - p[0], q[1] - p[1]];
+  const len = Math.hypot(along[0], along[1]);
+  const down: Vec2 = [along[1] / len, -along[0] / len];
+  const bites = 1 + Math.floor(rand() * 3);
+  for (let i = 0; i < bites; i++) {
+    const t = (i + 0.5 + (rand() - 0.5) * 0.4) / bites;
+    const w = (0.12 + rand() * 0.2) / bites;
+    const d = 0.05 + rand() * 0.1;
+    const at = (u: number, k: number): Vec2 => [p[0] + along[0] * u - down[0] * k, p[1] + along[1] * u - down[1] * k];
+    cuts.push([at(t - w, 0.05), [at(t, 0)[0] + down[0] * d, at(t, 0)[1] + down[1] * d], at(t + w, 0.05)]);
   }
 
-  // Notches cut in from the fold at 112.5° (the left-hand edge).
-  for (let i = 0; i < 2 + Math.floor(rand() * 2); i++) {
-    const r = 0.25 + rand() * 0.5;
-    const outside = polar(r, 118);
-    const inside = polar(r + (rand() - 0.5) * 0.08, 112.5 - 5 - rand() * 7);
-    const along = 0.03 + rand() * 0.05;
-    cuts.push([polar(r - along, 118), inside, polar(r + along, 118), outside]);
+  // Notches cut in from each fold.
+  for (const [edge, inward] of [
+    [RIGHT, 1],
+    [LEFT, -1],
+  ] as const) {
+    const n = 2 + Math.floor(rand() * 2);
+    for (let i = 0; i < n; i++) {
+      const r = 0.2 + (i + 0.2 + rand() * 0.6) * (0.55 / n);
+      cuts.push(foldNotch(edge, inward, r, (5 + rand() * 9) * DEG, 0.025 + rand() * 0.04, (rand() - 0.5) * 0.06));
+    }
   }
 
   // A few holes in the middle of the wedge.
-  for (let i = 0; i < 1 + Math.floor(rand() * 3); i++) {
-    const [cx, cy] = polar(0.3 + rand() * 0.45, 98 + rand() * 9);
-    cuts.push(ellipse(cx, cy, 0.015 + rand() * 0.03, 0.03 + rand() * 0.05, rand() * Math.PI));
+  for (let i = 0; i < 1 + Math.floor(rand() * 2); i++) {
+    const [cx, cy] = polar(0.3 + rand() * 0.4, 85 * DEG + rand() * 10 * DEG);
+    cuts.push(ellipse(cx, cy, 0.012 + rand() * 0.02, 0.025 + rand() * 0.04, rand() * Math.PI));
   }
 
   // Snip the point so the centre opens into a small star.
-  cuts.push([
-    [0.1, -0.1],
-    [0.1, 0.06 + rand() * 0.05],
-    polar(0.05 + rand() * 0.05, 106),
-    [-0.2, -0.1],
-  ]);
+  const snip = 0.05 + rand() * 0.06;
+  cuts.push([[0.3, -0.1], polar(snip * 1.4, RIGHT), polar(snip, 90 * DEG), polar(snip * 1.4, LEFT), [-0.3, -0.1]]);
   return cuts;
 }
