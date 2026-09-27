@@ -19,45 +19,45 @@ function flakeSprite() {
   return new THREE.CanvasTexture(c);
 }
 
+/**
+ * Each flake is a small square facing the viewer, one instance of one mesh.
+ * (Sized points would be lighter, but WebGPU only draws them a pixel wide.)
+ * The size matches what the old 0.06 attenuated point size came to on screen.
+ */
+const FLAKE = 0.022;
+
 export function Snowfall() {
-  const points = useRef<THREE.Points>(null);
-  const { geometry, speeds, sprite } = useMemo(() => {
-    const pos = new Float32Array(COUNT * 3);
+  const mesh = useRef<THREE.InstancedMesh>(null);
+  const { positions, speeds, sprite, matrix } = useMemo(() => {
+    const positions = new Float32Array(COUNT * 3);
     const speeds = new Float32Array(COUNT);
     for (let i = 0; i < COUNT; i++) {
-      pos[i * 3] = (Math.random() - 0.5) * BOX.x;
-      pos[i * 3 + 1] = (Math.random() - 0.5) * BOX.y;
-      pos[i * 3 + 2] = BOX.zNear + Math.random() * (BOX.zFar - BOX.zNear);
+      positions[i * 3] = (Math.random() - 0.5) * BOX.x;
+      positions[i * 3 + 1] = (Math.random() - 0.5) * BOX.y;
+      positions[i * 3 + 2] = BOX.zNear + Math.random() * (BOX.zFar - BOX.zNear);
       speeds[i] = 0.15 + Math.random() * 0.35;
     }
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-    return { geometry, speeds, sprite: flakeSprite() };
+    return { positions, speeds, sprite: flakeSprite(), matrix: new THREE.Matrix4() };
   }, []);
 
   useFrame(({ clock }, dt) => {
-    const attr = geometry.attributes.position as THREE.BufferAttribute;
-    const a = attr.array as Float32Array;
+    const m = mesh.current;
+    if (!m) return;
+    const a = positions;
     const t = clock.elapsedTime;
     for (let i = 0; i < COUNT; i++) {
       a[i * 3 + 1] -= speeds[i] * dt;
       a[i * 3] += Math.sin(t * 0.5 + i) * 0.04 * dt;
       if (a[i * 3 + 1] < -BOX.y / 2) a[i * 3 + 1] += BOX.y;
+      m.setMatrixAt(i, matrix.makeTranslation(a[i * 3], a[i * 3 + 1], a[i * 3 + 2]));
     }
-    attr.needsUpdate = true;
+    m.instanceMatrix.needsUpdate = true;
   });
 
   return (
-    <points ref={points} geometry={geometry}>
-      <pointsMaterial
-        map={sprite}
-        size={0.06}
-        sizeAttenuation
-        transparent
-        opacity={0.7}
-        depthWrite={false}
-        color="#dfe9ff"
-      />
-    </points>
+    <instancedMesh ref={mesh} args={[undefined, undefined, COUNT]} frustumCulled={false}>
+      <planeGeometry args={[FLAKE, FLAKE]} />
+      <meshBasicMaterial map={sprite} transparent opacity={0.7} depthWrite={false} color="#dfe9ff" />
+    </instancedMesh>
   );
 }

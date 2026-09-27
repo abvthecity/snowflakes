@@ -1,7 +1,8 @@
 // Screenshot the app: `pnpm build && pnpm shot`. Writes PNGs to shots/.
 //
 // Serves dist/ with `vite preview` and opens it in headless Chromium, which
-// renders WebGL in software (SwiftShader), so it needs no GPU and runs in CI
+// renders WebGPU (and WebGL, for the ?webgl fallback) in software through
+// SwiftShader, so it needs no GPU and runs in CI
 // or the Docker runner. Software rendering manages about a frame a second,
 // so the stills are set up from the URL (?demo, &fold) rather than by
 // clicking through the animation; one pass does click through, to check the
@@ -18,14 +19,41 @@ const server = await preview({ preview: { port, strictPort: true } });
 const base = `http://localhost:${port}/`;
 const browser = await chromium.launch({
   executablePath: process.env.CHROMIUM_PATH || undefined,
-  args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"],
+  // SwiftShader backs WebGL and, through Vulkan, WebGPU too, so both renderers can be checked.
+  args: [
+    "--use-angle=swiftshader",
+    "--enable-unsafe-swiftshader",
+    "--ignore-gpu-blocklist",
+    "--enable-unsafe-webgpu",
+    "--enable-features=Vulkan",
+    "--use-vulkan=swiftshader",
+    "--use-webgpu-adapter=swiftshader",
+  ],
 });
 const errors = [];
+
+/**
+ * This Chromium's experimental WebGPU (behind --enable-unsafe-webgpu) rejects
+ * the texture view `swizzle` that three sets to the identity "rgba"; released
+ * browsers ignore it. Drop it, so the WebGPU renderer runs here too.
+ */
+const dropIdentitySwizzle = () => {
+  if (!self.GPUTexture) return;
+  const createView = GPUTexture.prototype.createView;
+  GPUTexture.prototype.createView = function (d) {
+    if (d?.swizzle === "rgba") {
+      d = { ...d };
+      delete d.swizzle;
+    }
+    return createView.call(this, d);
+  };
+};
 
 async function open(query, viewport = { width: 1280, height: 860 }) {
   const page = await browser.newPage({ viewport });
   page.on("pageerror", (e) => errors.push(e.message));
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
+  await page.addInitScript(dropIdentitySwizzle);
   await page.goto(base + query);
   return page;
 }
@@ -46,12 +74,18 @@ const stills = [
   ["5-unfolding", "?demo=11&fold=1.4"],
   ["6-snowflake", "?demo=11&fold=0"],
   ["7-another", "?demo=5&fold=0"],
+  // The WebGL fallback, for browsers without WebGPU.
+  ["7c-webgl", "?demo=11&fold=0&webgl"],
 ];
 
 try {
   for (const [name, query] of stills) {
     const page = await open(query);
-    await page.locator("canvas").waitFor();
+    // Wait for the renderer to finish compiling its materials (WebGPU does so in the background).
+    await page.locator("html[data-ready]").waitFor({ timeout: 120_000 });
+    // Only ?webgl should fall back; anything else means WebGPU went unchecked.
+    const renderer = await page.evaluate(() => document.documentElement.dataset.renderer);
+    if (renderer !== (query.includes("webgl") ? "webgl" : "webgpu")) errors.push(`${name}: drew with ${renderer}`);
     await frames(page, 4);
     await page.screenshot({ path: new URL(`${name}.png`, out).pathname });
     console.log(`shots/${name}.png`);
@@ -106,6 +140,7 @@ try {
   // finger drags for the freehand loop, a curve handle and turning the result.
   const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
   phone.on("pageerror", (e) => errors.push(e.message));
+  await phone.addInitScript(dropIdentitySwizzle);
   await phone.goto(base + "?lite");
   const touch = await phone.context().newCDPSession(phone);
   const drag = async (points) => {

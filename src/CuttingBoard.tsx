@@ -7,7 +7,7 @@
 //
 // A pen path in progress lives in App, so the panel's Cut and Cancel buttons
 // can finish or drop it; Enter, Escape and Backspace do the same here.
-import { Line } from "@react-three/drei";
+import { Stroke } from "./Stroke";
 import type { ThreeEvent } from "@react-three/fiber";
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import type { Vec2 } from "./folds";
@@ -138,15 +138,15 @@ export function CuttingBoard({
       </mesh>
 
       {stroke.length > 1 && (
-        <Line points={lift([...stroke, stroke[0]])} color={RED} lineWidth={2.5} dashed dashSize={0.02} gapSize={0.012} />
+        <Stroke points={lift([...stroke, stroke[0]])} color={RED} lineWidth={2.5} dashed dashSize={0.02} gapSize={0.012} />
       )}
 
       {pen && (
         <>
-          {path.length > 1 && <Line points={lift(path)} color={RED} lineWidth={2.5} />}
+          {path.length > 1 && <Stroke points={lift(path)} color={RED} lineWidth={2.5} />}
           {/* Where the next segment will go: to the pointer, or back to the start to close. */}
           {hover && !dragging.current && (
-            <Line
+            <Stroke
               points={lift([last.point, closing ? anchors[0].point : hover])}
               color={RED}
               lineWidth={1.5}
@@ -160,7 +160,7 @@ export function CuttingBoard({
           ))}
           {tool === "curve" && (last.handle[0] || last.handle[1]) ? (
             <>
-              <Line
+              <Stroke
                 points={lift([
                   [last.point[0] - last.handle[0], last.point[1] - last.handle[1]],
                   [last.point[0] + last.handle[0], last.point[1] + last.handle[1]],

@@ -31,8 +31,8 @@ jobs:
       - run: pnpm test
       - run: pnpm build
       # The screenshots render the real app in headless Chromium with software
-      # WebGL, so a change that breaks the scene fails here, and the pictures
-      # are kept on the run for review.
+      # WebGPU (and WebGL for the fallback), so a change that breaks the scene
+      # fails here, and the pictures are kept on the run for review.
       - run: pnpm exec playwright install chromium
       - run: pnpm shot
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
