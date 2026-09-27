@@ -4,16 +4,17 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { CutMask } from "./cuts";
-import { CuttingBoard, type CutTool } from "./CuttingBoard";
+import { CuttingBoard, NO_PATH, type CutPath } from "./CuttingBoard";
 import { TRIM_CUT, TRIM_LINE } from "./folds";
-import { type Anchor } from "./penPath";
+import { outline, type Anchor } from "./penPath";
 import type { Vec2 } from "./folds";
+import { CutPreview } from "./CutPreview";
 import { Paper } from "./Paper";
 import { Snowfall } from "./Snowfall";
 import { Stroke } from "./Stroke";
 import { webgpu } from "./gpu";
 import { randomCuts } from "./randomCuts";
-import { Recorder, cutShape, drawTime, finalPaper, outlineCut, penCut, type CutKind, type Recording, type TimelineEvent } from "./timeline";
+import { Recorder, cutAnchors, cutShape, drawTime, finalPaper, outlineCut, penCut, type Recording, type Step } from "./timeline";
 import { loadSnowflake, saveSnowflake, shareUrl } from "./api";
 
 type Stage = "flat" | "folding" | "trimming" | "cutting" | "unfolding" | "open" | "still";
@@ -183,19 +184,129 @@ function Ready() {
   return null;
 }
 
-/** A gentle sway once the snowflake is open, as if it hung on a thread. */
-function Sway({ active, children }: { active: boolean; children: React.ReactNode }) {
+/**
+ * A gentle sway once the snowflake is open, as if it hung on a thread. It
+ * settles while `held`, so a drag's turn never adds to it.
+ */
+function Sway({ active, held, children }: { active: boolean; held: React.RefObject<boolean>; children: React.ReactNode }) {
   const group = useRef<THREE.Group>(null);
   const t = useRef(0);
   useFrame((_, dt) => {
     const g = group.current;
     if (!g) return;
     t.current += dt;
-    const amount = active ? 1 : 0;
+    const amount = active && !held.current ? 1 : 0;
     const k = 1 - Math.exp(-dt * 2);
     g.rotation.y = THREE.MathUtils.lerp(g.rotation.y, amount * Math.sin(t.current * 0.6) * 0.45, k);
     g.rotation.x = THREE.MathUtils.lerp(g.rotation.x, amount * Math.sin(t.current * 0.43) * 0.12, k);
   });
+  return <group ref={group}>{children}</group>;
+}
+
+/**
+ * The furthest a drag can turn the paper, in radians, in any direction. The
+ * paper is thin enough to vanish edge-on, and the resting views already tilt
+ * it up to about 25°, so this keeps it well short of 90° from the camera.
+ */
+const MAX_TURN = 0.6;
+/** Radians of turn per screen height dragged, before the resistance sets in. */
+const TURN_GAIN = 2.4;
+
+/**
+ * Drag to turn the paper, on a rubber band: the further it turns the harder
+ * it pulls, never past `MAX_TURN`, and letting go eases it back to face the
+ * camera, the one view where a paper snowflake reads. It turns about the
+ * camera's own axes and the point the camera looks at.
+ */
+function DragTurn({
+  enabled,
+  controls,
+  held,
+  children,
+}: {
+  enabled: boolean;
+  controls: React.RefObject<OrbitControlsImpl | null>;
+  held: React.RefObject<boolean>;
+  children: React.ReactNode;
+}) {
+  const { gl, camera, size } = useThree();
+  const group = useRef<THREE.Group>(null);
+  const drag = useRef<{ id: number; x: number; y: number } | null>(null);
+  const pull = useRef(new THREE.Vector2());
+  const turn = useRef(new THREE.Vector2());
+  const pointers = useRef(new Set<number>());
+  const tmp = useMemo(
+    () => ({ yaw: new THREE.Quaternion(), pitch: new THREE.Quaternion(), axis: new THREE.Vector3(), pivot: new THREE.Vector3() }),
+    [],
+  );
+
+  useEffect(() => {
+    const el = gl.domElement;
+    const release = () => {
+      drag.current = null;
+      pull.current.set(0, 0);
+    };
+    const down = (e: PointerEvent) => {
+      pointers.current.add(e.pointerId);
+      // A second finger means a pinch to zoom: let go of the turn.
+      if (pointers.current.size > 1) return release();
+      if (enabled) drag.current = { id: e.pointerId, x: e.clientX, y: e.clientY };
+    };
+    const move = (e: PointerEvent) => {
+      const d = drag.current;
+      if (!d || d.id !== e.pointerId) return;
+      const scale = TURN_GAIN / size.height;
+      pull.current.set((e.clientX - d.x) * scale, (e.clientY - d.y) * scale);
+    };
+    const up = (e: PointerEvent) => {
+      pointers.current.delete(e.pointerId);
+      if (drag.current?.id === e.pointerId) release();
+    };
+    el.addEventListener("pointerdown", down);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+    return () => {
+      el.removeEventListener("pointerdown", down);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+    };
+  }, [gl, size.height, enabled]);
+
+  useEffect(() => {
+    if (!enabled) {
+      drag.current = null;
+      pull.current.set(0, 0);
+    }
+  }, [enabled]);
+
+  useFrame((_, dt) => {
+    const g = group.current;
+    if (!g) return;
+    // Resistance: the turn follows the drag at first, then tapers off toward MAX_TURN.
+    // Capped on the drag's length, not per axis, so a diagonal can't add up past the limit.
+    const reach = pull.current.length();
+    const band = reach > 1e-6 ? (MAX_TURN * Math.tanh(reach / MAX_TURN)) / reach : 1;
+    const goalX = pull.current.x * band;
+    const goalY = pull.current.y * band;
+    // Snappy while held, a gentle glide home once let go.
+    held.current = drag.current !== null;
+    const k = 1 - Math.exp(-dt * (drag.current ? 18 : 4));
+    turn.current.x += (goalX - turn.current.x) * k;
+    turn.current.y += (goalY - turn.current.y) * k;
+    if (!drag.current && turn.current.lengthSq() < 1e-8) turn.current.set(0, 0);
+
+    tmp.yaw.setFromAxisAngle(tmp.axis.set(0, 1, 0).applyQuaternion(camera.quaternion), turn.current.x);
+    tmp.pitch.setFromAxisAngle(tmp.axis.set(1, 0, 0).applyQuaternion(camera.quaternion), turn.current.y);
+    g.quaternion.multiplyQuaternions(tmp.yaw, tmp.pitch);
+    // Turn about the point the camera looks at, not the world origin.
+    const target = controls.current?.target;
+    if (target) tmp.pivot.copy(target);
+    else tmp.pivot.set(0, 0, 0);
+    g.position.copy(tmp.pivot).sub(tmp.axis.copy(tmp.pivot).applyQuaternion(g.quaternion));
+  });
+
   return <group ref={group}>{children}</group>;
 }
 
@@ -215,11 +326,13 @@ const FOLD_STEPS = [
 
 const STEP_COUNT = FOLD_STEPS.length + 3;
 
-const TOOLS: { id: CutTool; label: string; hint: string }[] = [
-  { id: "freehand", label: "Freehand", hint: "Draw a loop across the folded paper with a finger or the mouse. Letting go cuts it out of all twelve layers." },
-  { id: "straight", label: "Straight", hint: "Tap or click corner after corner, then the first corner again (or press Cut) to cut along straight lines." },
-  { id: "curve", label: "Curve", hint: "Tap for a sharp corner, or press and drag to pull a smooth curve. Tap the first point again (or press Cut) to cut." },
-];
+/** What the scissors do next, by where the shape is at. */
+const CUT_HINTS = {
+  start:
+    "Tap corner after corner for straight cuts, or drag to draw. Close the shape on its first point to cut through all twelve layers.",
+  open: "Keep tapping or drawing; the faded part is what falls away. Tap the first point (or press Cut) to cut, or tap a point to round it.",
+  closed: "Drag a point or its blue handles to reshape the cut, tap a point to round or sharpen it, or start the next cut anywhere.",
+};
 
 const COPY: Record<Stage, { title: string; body: string }> = {
   flat: FOLD_STEPS[0],
@@ -236,6 +349,12 @@ const COPY: Record<Stage, { title: string; body: string }> = {
 
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
 const nextFrame = () => new Promise((done) => requestAnimationFrame(done));
+const lerpAnchors = (a: Anchor[], b: Anchor[], k: number): Anchor[] =>
+  b.map((to, i) => {
+    const from = a[i];
+    const mix = (p: Vec2, q: Vec2): Vec2 => [p[0] + (q[0] - p[0]) * k, p[1] + (q[1] - p[1]) * k];
+    return { point: mix(from.point, to.point), handle: mix(from.handle, to.handle) };
+  });
 
 type SaveState = { state: "idle" } | { state: "saving" } | { state: "saved"; id: string; copied?: boolean } | { state: "error"; message: string };
 
@@ -246,16 +365,15 @@ export function App() {
   const [cuts, setCuts] = useState(0);
   /** How many folds the paper is heading for, 0 to 4. */
   const [folds, setFolds] = useState(0);
-  const [tool, setTool] = useState<CutTool>("freehand");
-  const [anchors, setAnchors] = useState<Anchor[]>([]);
+  const [path, setPath] = useState<CutPath>(NO_PATH);
   const [save, setSave] = useState<SaveState>({ state: "idle" });
   /** Opening a saved snowflake from the link: loading, or why it failed. */
   const [opening, setOpening] = useState<"loading" | "missing" | null>(SHARED ? "loading" : null);
   /** Whether the paper on screen is someone's saved snowflake, untouched since it opened. */
   const [shared, setShared] = useState(false);
   const [replaying, setReplaying] = useState(false);
-  /** The cut being drawn in a replay. */
-  const [ghost, setGhost] = useState<Vec2[]>([]);
+  /** The cut being drawn (or reshaped) in a replay, and whether it has closed. */
+  const [ghost, setGhost] = useState<{ points: Vec2[]; closed: boolean }>({ points: [], closed: false });
   const fold = useRef(0);
   const foldSpeed = useRef(1);
   /** Set to skip the rest of a replay; each step then happens at once. */
@@ -264,6 +382,7 @@ export function App() {
   const arrivals = useRef<(() => void)[]>([]);
   const controls = useRef<OrbitControlsImpl>(null);
   const panel = useRef<HTMLDivElement>(null);
+  const held = useRef(false);
 
   const foldTarget =
     stage === "folding" || stage === "trimming" || stage === "cutting" ? folds : stage === "unfolding" ? 0 : fold.current;
@@ -322,38 +441,46 @@ export function App() {
     for (const done of arrivals.current.splice(0)) done();
   };
 
-  // Everything that changes the paper, shared by the buttons and replays.
-  const act = {
-    fold() {
-      setFolds((f) => f + 1);
-      setStage("folding");
-    },
-    trim() {
-      mask.trim(TRIM_CUT);
-      setStage("cutting");
-    },
-    cut(tool: CutKind, pts: number[]) {
-      mask.cut(cutShape({ t: 0, k: "cut", tool, pts }).points);
-      setCuts(mask.count);
-    },
-    undo() {
-      mask.undo();
-      setCuts(mask.count);
-    },
-    unfold() {
-      setStage("unfolding");
-    },
-    refold() {
-      setFolds(FOLD_STEPS.length);
-      setStage("folding");
-    },
+  /**
+   * Everything that changes the paper, shared by the buttons and replays. A
+   * recut replaces the last cut; while cutting live, the scissors have already
+   * lifted it off the paper (`onLift`), so `lifted` skips taking it off again.
+   */
+  const apply = (e: Step, lifted = false) => {
+    switch (e.k) {
+      case "fold":
+        setFolds((f) => f + 1);
+        setStage("folding");
+        break;
+      case "trim":
+        mask.trim(TRIM_CUT);
+        setStage("cutting");
+        break;
+      case "recut":
+        if (!lifted) mask.undo();
+      // falls through
+      case "cut":
+        mask.cut(cutShape(e).points);
+        setCuts(mask.count);
+        break;
+      case "undo":
+        mask.undo();
+        setCuts(mask.count);
+        break;
+      case "unfold":
+        setStage("unfolding");
+        break;
+      case "refold":
+        setFolds(FOLD_STEPS.length);
+        setStage("folding");
+        break;
+    }
   };
 
   /** Do it, and add it to the recording. The paper has changed, so any saved link no longer matches. */
-  const record = (e: Parameters<Recorder["add"]>[0]) => {
+  const record = (e: Step, lifted = false) => {
     recorder.add(e);
-    if (e.k === "cut") act.cut(e.tool, e.pts);
-    else act[e.k]();
+    apply(e, lifted);
     if (save.state !== "idle") setSave({ state: "idle" });
     if (shared) setShared(false);
     if (SHARED) history.replaceState(null, "", location.pathname);
@@ -364,7 +491,7 @@ export function App() {
     setCuts(0);
     fold.current = 0;
     setFolds(0);
-    setAnchors([]);
+    setPath(NO_PATH);
     setStage("flat");
   };
 
@@ -378,9 +505,22 @@ export function App() {
       if (!skip.current) await sleep(ms);
     };
     const arrive = () => new Promise<void>((done) => arrivals.current.push(done));
+    /** Runs `frame` with 0 → 1 over `ms`, or not at all when skipping. */
+    const animate = async (ms: number, frame: (k: number) => void) => {
+      const start = performance.now();
+      while (!skip.current && ms > 0) {
+        const k = (performance.now() - start) / ms;
+        if (k >= 1) break;
+        frame(k);
+        await nextFrame();
+      }
+      setGhost({ points: [], closed: false });
+    };
+    // The anchors of the last pen cut, so a recut can be shown reshaping it.
+    const shapes: Anchor[][] = [];
     await wait(700);
     let prev = recording.events[0]?.t ?? 0;
-    for (const e of recording.events as TimelineEvent[]) {
+    for (const e of recording.events) {
       await wait(Math.min(1200, Math.max(150, e.t - prev)));
       prev = e.t;
       if (skip.current) foldSpeed.current = 40;
@@ -388,20 +528,25 @@ export function App() {
         // Draw the cut again, sped up if it took a while.
         const total = drawTime(e);
         const scale = Math.max(1, total / 2500);
-        const start = performance.now();
-        while (!skip.current && total > 0) {
-          const ms = (performance.now() - start) * scale;
-          if (ms >= total) break;
-          setGhost(cutShape(e, ms).points);
-          await nextFrame();
-        }
-        setGhost([]);
-        act.cut(e.tool, e.pts);
+        await animate(total / scale, (k) => setGhost({ points: cutShape(e, k * total).points, closed: false }));
+        apply(e);
+        shapes.push(cutAnchors(e));
         if (e.tool !== "surprise") await wait(250);
+      } else if (e.k === "recut") {
+        // Pull the last cut into its new shape.
+        const from = shapes.pop() ?? [];
+        const to = cutAnchors(e);
+        mask.undo();
+        setCuts(mask.count);
+        if (from.length === to.length && to.length > 2)
+          await animate(450, (k) => setGhost({ points: outline(lerpAnchors(from, to, k * k * (3 - 2 * k)), true), closed: true }));
+        apply(e, true);
+        shapes.push(to);
       } else {
+        if (e.k === "undo") shapes.pop();
         const moves = e.k === "fold" || e.k === "refold" || e.k === "unfold";
         const arrived = moves ? arrive() : null;
-        act[e.k]();
+        apply(e);
         if (arrived) await arrived;
       }
     }
@@ -436,9 +581,7 @@ export function App() {
       ? { title: "Opening a snowflake…", body: "" }
       : { title: "Snowflake not found", body: "That link doesn't lead to a saved snowflake. Fold a new one here instead." }
     : replaying
-      ? stage === "flat"
-        ? { title: "Replaying…", body: FOLD_STEPS[folds]?.body ?? "" }
-        : { title: "Replaying…", body: COPY[stage].body }
+      ? { title: "Replaying…", body: stage === "flat" ? (FOLD_STEPS[folds]?.body ?? "") : COPY[stage].body }
       : stage === "flat"
         ? FOLD_STEPS[folds]
         : stage === "open" && shared
@@ -457,6 +600,8 @@ export function App() {
               ? 7
               : null;
   const busy = stage === "folding" || stage === "unfolding";
+  /** A shape is being drawn and has not been cut yet. */
+  const open = !path.closed && path.anchors.length > 0;
   const canReplay = recorder.events.some((e) => e.k === "cut");
 
   return (
@@ -493,20 +638,37 @@ export function App() {
         {/* Behind the paper: what shines through it. */}
         <directionalLight position={[-1, 1.5, -3]} intensity={1.4} color="#ffd7a1" />
 
-        <Sway active={stage === "open"}>
-          <Paper fold={fold} mask={mask.texture} creased={stage !== "flat" && !(stage === "still" && cuts === 0)} />
-        </Sway>
+        <DragTurn enabled={stage === "flat" || stage === "open" || stage === "still"} controls={controls} held={held}>
+          <Sway active={stage === "open"} held={held}>
+            <Paper fold={fold} mask={mask.texture} creased={stage !== "flat" && !(stage === "still" && cuts === 0)} />
+          </Sway>
+        </DragTurn>
         {stage === "trimming" && <TrimGuide />}
         {stage === "cutting" && !replaying && (
           <CuttingBoard
-            tool={tool}
-            anchors={anchors}
-            setAnchors={setAnchors}
-            onCut={(pts) => record({ k: "cut", tool, pts })}
+            path={path}
+            setPath={setPath}
+            mask={mask}
+            onClose={(anchors) => {
+              // A closed path being closed again is the last cut, reshaped.
+              record({ k: path.closed ? "recut" : "cut", tool: "pen", pts: penCut(anchors) }, path.closed);
+              setPath({ anchors, closed: true });
+            }}
+            onLift={() => {
+              mask.undo();
+              setCuts(mask.count);
+            }}
           />
         )}
-        {ghost.length > 1 && (
-          <Stroke points={ghost.map(([x, y]) => [x, y, 0.09] as [number, number, number])} color="#e2483d" lineWidth={2.5} />
+        {ghost.points.length > 1 && (
+          <>
+            <CutPreview shape={ghost.points} mask={mask} z={0.086} />
+            <Stroke
+              points={(ghost.closed ? [...ghost.points, ghost.points[0]] : ghost.points).map(([x, y]) => [x, y, 0.09] as [number, number, number])}
+              color="#e2483d"
+              lineWidth={2.5}
+            />
+          </>
         )}
         <Snowfall />
         <Ready />
@@ -517,6 +679,7 @@ export function App() {
           ref={controls}
           enabled={stage === "flat" || stage === "open" || stage === "still"}
           enablePan={false}
+          enableRotate={false}
           minDistance={1.4}
           maxDistance={7}
         />
@@ -531,25 +694,7 @@ export function App() {
         <h1>{copy.title}</h1>
         {copy.body && <p>{copy.body}</p>}
         {stage === "cutting" && !replaying && (
-          <>
-            <div className="tools" role="radiogroup" aria-label="Scissors">
-              {TOOLS.map((t) => (
-                <button
-                  key={t.id}
-                  role="radio"
-                  aria-checked={tool === t.id}
-                  className={tool === t.id ? "tool on" : "tool"}
-                  onClick={() => {
-                    setTool(t.id);
-                    setAnchors([]);
-                  }}
-                >
-                  {t.label}
-                </button>
-              ))}
-            </div>
-            <p>{TOOLS.find((t) => t.id === tool)!.hint}</p>
-          </>
+          <p>{CUT_HINTS[path.closed ? "closed" : path.anchors.length ? "open" : "start"]}</p>
         )}
         {stage === "open" && !replaying && save.state === "saved" && (
           <div className="share">
@@ -567,36 +712,50 @@ export function App() {
             <>
               {stage === "flat" && <button onClick={() => record({ k: "fold" })}>Fold</button>}
               {stage === "trimming" && <button onClick={() => record({ k: "trim" })}>Trim</button>}
-              {stage === "cutting" && anchors.length > 0 && (
+              {stage === "cutting" && open && (
                 <>
                   <button
-                    disabled={anchors.length < 3}
+                    disabled={path.anchors.length < 3}
                     onClick={() => {
-                      record({ k: "cut", tool, pts: penCut(anchors) });
-                      setAnchors([]);
+                      record({ k: "cut", tool: "pen", pts: penCut(path.anchors) });
+                      setPath({ anchors: path.anchors, closed: true });
                     }}
                   >
                     Cut
                   </button>
-                  <button className="quiet" onClick={() => setAnchors([])}>
+                  <button className="quiet" onClick={() => setPath(NO_PATH)}>
                     Cancel
                   </button>
                 </>
               )}
-              {stage === "cutting" && anchors.length === 0 && (
+              {stage === "cutting" && !open && (
                 <>
-                  <button disabled={cuts === 0} onClick={() => record({ k: "unfold" })}>
+                  <button
+                    disabled={cuts === 0}
+                    onClick={() => {
+                      setPath(NO_PATH);
+                      record({ k: "unfold" });
+                    }}
+                  >
                     Unfold
                   </button>
                   <button
                     className="quiet"
                     onClick={() => {
+                      setPath(NO_PATH);
                       for (const c of randomCuts(3)) record({ k: "cut", tool: "surprise", pts: outlineCut(c) });
                     }}
                   >
                     Surprise me
                   </button>
-                  <button className="quiet" disabled={cuts === 0} onClick={() => record({ k: "undo" })}>
+                  <button
+                    className="quiet"
+                    disabled={cuts === 0}
+                    onClick={() => {
+                      setPath(NO_PATH);
+                      record({ k: "undo" });
+                    }}
+                  >
                     Undo
                   </button>
                 </>

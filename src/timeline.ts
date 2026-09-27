@@ -1,28 +1,33 @@
 // A snowflake is saved as the story of how it was made: every fold, the trim,
-// each cut as it was drawn, undos, unfolds. That is a few KB of JSON, and
+// each cut as it was drawn, each reshaping of a finished cut, undos, unfolds. That is a few KB of JSON, and
 // replaying it rebuilds the paper exactly and shows the cutting again in 3D.
 //
 // Times are milliseconds since the paper was picked up. A cut keeps its drawing
 // too, with times relative to the cut's start:
 //
-//   freehand  pts = [x, y, ms, x, y, ms, …], the stroke as it was drawn
-//   pen,
-//   straight,
-//   curve     pts = [x, y, hx, hy, ms, …], each anchor with its outgoing handle
-//             (zero for a corner, the incoming one mirrors it for a curve);
-//             "pen" is for a single scissors tool that mixes corners and curves
+//   pen       pts = [x, y, hx, hy, ms, …], each anchor of the scissors' path
+//             with its outgoing handle (zero for a corner; the incoming one
+//             mirrors it for a curve) and when it was placed
 //   surprise  pts = [x, y, x, y, …], a ready-made outline
+//
+// A "recut" is the last cut reshaped (a point or handle dragged, a corner
+// rounded): it replaces that cut with its new path.
 //
 // The functions here run in the browser and in the Pages Function that
 // stores recordings, which checks them with `parseRecording`.
 import type { Vec2 } from "./folds.ts";
 import { outline, type Anchor } from "./penPath.ts";
 
-export type CutKind = "freehand" | "pen" | "straight" | "curve" | "surprise";
+export type CutKind = "pen" | "surprise";
 
 export type TimelineEvent =
   | { t: number; k: "fold" | "trim" | "undo" | "unfold" | "refold" }
-  | { t: number; k: "cut"; tool: CutKind; pts: number[] };
+  | { t: number; k: "cut" | "recut"; tool: CutKind; pts: number[] };
+
+/** Everything but the time, as the app hands events to the recorder. */
+export type Step =
+  | { k: "fold" | "trim" | "undo" | "unfold" | "refold" }
+  | { k: "cut" | "recut"; tool: CutKind; pts: number[] };
 
 /** Which paper the snowflake was cut from, and any settings it takes (colour, weight…). */
 export interface PaperChoice {
@@ -54,19 +59,13 @@ export interface Recording {
 }
 
 /** Numbers per point in each kind of cut. */
-const STRIDE: Record<CutKind, number> = { freehand: 3, pen: 5, straight: 5, curve: 5, surprise: 2 };
+const STRIDE: Record<CutKind, number> = { pen: 5, surprise: 2 };
 
 /** Limits a stored recording must stay within. */
 export const LIMITS = { bytes: 512 * 1024, events: 2000, points: 4000 };
 
 /** Coordinates to 1/10 000 of the paper, which keeps the JSON small without a visible difference. */
 const q = (n: number) => Math.round(n * 1e4) / 1e4;
-
-/** A freehand stroke, with when each point was drawn (any clock, in ms). */
-export function freehandCut(points: readonly Vec2[], times: readonly number[]): number[] {
-  const start = times[0] ?? 0;
-  return points.flatMap(([x, y], i) => [q(x), q(y), Math.round((times[i] ?? start) - start)]);
-}
 
 /** A pen path, with when each anchor was placed (its `at`). */
 export function penCut(anchors: readonly Anchor[]): number[] {
@@ -78,7 +77,18 @@ export function outlineCut(points: readonly Vec2[]): number[] {
   return points.flatMap(([x, y]) => [q(x), q(y)]);
 }
 
-type Cut = Extract<TimelineEvent, { k: "cut" }>;
+type Cut = Extract<Step, { k: "cut" | "recut" }>;
+
+/** The anchors of a pen cut, as far as `ms` into drawing it. */
+export function cutAnchors(cut: Cut, ms = Infinity): Anchor[] {
+  const anchors: Anchor[] = [];
+  if (cut.tool !== "pen") return anchors;
+  for (let o = 0; o + 5 <= cut.pts.length; o += 5) {
+    if (cut.pts[o + 4] > ms) break;
+    anchors.push({ point: [cut.pts[o], cut.pts[o + 1]], handle: [cut.pts[o + 2], cut.pts[o + 3]] });
+  }
+  return anchors;
+}
 
 /** How long drawing the cut took, in ms. */
 export function drawTime(cut: Cut): number {
@@ -92,24 +102,13 @@ export function drawTime(cut: Cut): number {
  * (open), or the closed outline that was cut once `ms` reaches the end.
  */
 export function cutShape(cut: Cut, ms = Infinity): { points: Vec2[]; done: boolean } {
-  const n = STRIDE[cut.tool];
-  const count = cut.pts.length / n;
   const done = ms >= drawTime(cut);
-  if (cut.tool === "freehand" || cut.tool === "surprise") {
+  if (cut.tool === "surprise") {
     const points: Vec2[] = [];
-    for (let i = 0; i < count; i++) {
-      if (!done && cut.tool === "freehand" && cut.pts[i * n + 2] > ms) break;
-      points.push([cut.pts[i * n], cut.pts[i * n + 1]]);
-    }
+    for (let o = 0; o + 2 <= cut.pts.length; o += 2) points.push([cut.pts[o], cut.pts[o + 1]]);
     return { points, done };
   }
-  const anchors: Anchor[] = [];
-  for (let i = 0; i < count; i++) {
-    const o = i * n;
-    if (!done && cut.pts[o + 4] > ms) break;
-    anchors.push({ point: [cut.pts[o], cut.pts[o + 1]], handle: [cut.pts[o + 2], cut.pts[o + 3]] });
-  }
-  return { points: outline(anchors, done), done };
+  return { points: outline(cutAnchors(cut, done ? Infinity : ms), done), done };
 }
 
 /** What the paper looks like at the end: whether it was trimmed, and the cuts still on it. */
@@ -119,12 +118,13 @@ export function finalPaper(events: readonly TimelineEvent[]) {
   for (const e of events) {
     if (e.k === "trim") trimmed = true;
     else if (e.k === "cut") cuts.push(cutShape(e).points);
+    else if (e.k === "recut") cuts.splice(-1, 1, cutShape(e).points);
     else if (e.k === "undo") cuts.pop();
   }
   return { trimmed, cuts };
 }
 
-const KINDS = new Set(["fold", "trim", "undo", "unfold", "refold", "cut"]);
+const KINDS = new Set(["fold", "trim", "undo", "unfold", "refold", "cut", "recut"]);
 
 function parsePaper(json: unknown): PaperChoice | string {
   if (json === undefined) return DEFAULT_PAPER;
@@ -162,9 +162,9 @@ export function parseRecording(json: unknown): Recording | string {
     if (typeof t !== "number" || !Number.isFinite(t) || t < last) return "bad time";
     last = t;
     if (typeof k !== "string" || !KINDS.has(k)) return "bad event kind";
-    if (k !== "cut") continue;
+    if (k !== "cut" && k !== "recut") continue;
     const { tool, pts } = e as { tool: unknown; pts: unknown };
-    if (typeof tool !== "string" || !(tool in STRIDE)) return "bad cut tool";
+    if (typeof tool !== "string" || !Object.hasOwn(STRIDE, tool)) return "bad cut tool";
     const n = STRIDE[tool as CutKind];
     if (!Array.isArray(pts) || pts.length < n * 2 || pts.length % n) return "bad cut points";
     if (!pts.every((p) => typeof p === "number" && Number.isFinite(p) && Math.abs(p) < 1e7)) return "bad cut points";
@@ -205,7 +205,7 @@ export class Recorder {
     return Math.round(this.offset + performance.now() - this.start);
   }
 
-  add(e: { k: "fold" | "trim" | "undo" | "unfold" | "refold" } | { k: "cut"; tool: CutKind; pts: number[] }) {
+  add(e: Step) {
     this.events.push({ t: this.now(), ...e } as TimelineEvent);
   }
 
