@@ -5,6 +5,7 @@ import { useFrame } from "@react-three/fiber";
 import { useMemo, useRef, type RefObject } from "react";
 import * as THREE from "three";
 import { FOLD_ANGLES, FOLD_LIFT, SECTORS } from "./folds";
+import { webgpu } from "./gpu";
 import { createPaperMaterial } from "./paperMaterial";
 
 /** How far apart the stacked layers sit, in paper widths. */
@@ -32,7 +33,7 @@ function sectorGeometry(triangle: readonly (readonly [number, number])[]) {
 }
 
 export function Paper({ fold, mask, creased }: { fold: RefObject<number>; mask: THREE.Texture; creased: boolean }) {
-  const material = useMemo(() => createPaperMaterial(mask), [mask]);
+  const material = useMemo(() => webgpu()?.createPaperNodeMaterial(mask) ?? createPaperMaterial(mask), [mask]);
   const geometries = useMemo(() => SECTORS.map((s) => sectorGeometry(s.triangle)), []);
   const meshes = useRef<(THREE.Mesh | null)[]>([]);
 
@@ -42,6 +43,8 @@ export function Paper({ fold, mask, creased }: { fold: RefObject<number>; mask: 
   useFrame((_, dt) => {
     const f = fold.current;
     crease.current = THREE.MathUtils.damp(crease.current, creased ? 1 : 0, 3, dt);
+    // The WebGPU paper draws the crease lines themselves, as the sheet opens.
+    if ("crease" in material) material.crease.value = crease.current * (1 - clamp01(f));
     for (const s of SECTORS) {
       const mesh = meshes.current[s.index];
       if (!mesh) continue;

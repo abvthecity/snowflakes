@@ -1,0 +1,5 @@
+# vgpu pulls in a Node WebGPU adapter (Dawn) for running shaders outside a
+# browser. The app only runs vgpu in the browser, so skip its native build.
+allowBuilds:
+  '@vgpu/adapter-node': false
+  webgpu: false

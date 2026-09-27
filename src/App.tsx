@@ -1,5 +1,5 @@
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Environment, Lightformer, Line, OrbitControls } from "@react-three/drei";
+import { Environment, Lightformer, OrbitControls } from "@react-three/drei";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
@@ -9,6 +9,8 @@ import { TRIM_CUT, TRIM_LINE } from "./folds";
 import { outline, type Anchor } from "./penPath";
 import { Paper } from "./Paper";
 import { Snowfall } from "./Snowfall";
+import { Stroke } from "./Stroke";
+import { webgpu } from "./gpu";
 import { randomCuts } from "./randomCuts";
 
 type Stage = "flat" | "folding" | "trimming" | "cutting" | "unfolding" | "open" | "still";
@@ -137,7 +139,32 @@ function TrimGuide() {
   const [p, q] = TRIM_LINE;
   const d = [q[0] - p[0], q[1] - p[1]];
   const ends = [-0.12, 1.12].map((t) => [p[0] + d[0] * t, p[1] + d[1] * t, 0.07] as [number, number, number]);
-  return <Line points={ends} color="#e2483d" lineWidth={2.5} dashed dashSize={0.025} gapSize={0.015} />;
+  return <Stroke points={ends} color="#e2483d" lineWidth={2.5} dashed dashSize={0.025} gapSize={0.015} />;
+}
+
+/**
+ * Marks the page ready (`<html data-ready>`) once every material in the scene
+ * has compiled and a frame has drawn with them, so screenshots can wait for
+ * it, and notes which renderer drew it (`data-renderer`).
+ */
+function Ready() {
+  const { gl, scene, camera } = useThree();
+  useEffect(() => {
+    let live = true;
+    gl.compileAsync(scene, camera).then(() =>
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          if (!live) return;
+          document.documentElement.dataset.renderer = webgpu() ? "webgpu" : "webgl";
+          document.documentElement.dataset.ready = "true";
+        }),
+      ),
+    );
+    return () => {
+      live = false;
+    };
+  }, [gl, scene, camera]);
+  return null;
 }
 
 /** A gentle sway once the snowflake is open, as if it hung on a thread. */
@@ -249,7 +276,16 @@ export function App() {
       <Canvas
         shadows={!LITE}
         dpr={LITE ? 1 : [1, 2]}
-        gl={{ antialias: !LITE, preserveDrawingBuffer: true, toneMapping: THREE.NeutralToneMapping, toneMappingExposure: 1.05 }}
+        gl={(defaults) => {
+          const kit = webgpu();
+          // Fiber awaits a renderer that needs async setup, though its types don't say so.
+          if (kit) return kit.createRenderer(defaults.canvas as HTMLCanvasElement, !LITE) as unknown as THREE.WebGLRenderer;
+          return new THREE.WebGLRenderer({ ...defaults, antialias: !LITE, preserveDrawingBuffer: true });
+        }}
+        onCreated={({ gl }) => {
+          gl.toneMapping = THREE.NeutralToneMapping;
+          gl.toneMappingExposure = 1.05;
+        }}
         camera={{ position: VIEWS.flat.position.toArray(), fov: 40, near: 0.05, far: 50 }}
       >
         <Environment resolution={256}>
@@ -285,6 +321,7 @@ export function App() {
           />
         )}
         <Snowfall />
+        <Ready />
 
         <FoldDriver fold={fold} target={foldTarget} onArrive={onArrive} />
         <CameraRig stage={stage} folds={folds} controls={controls} panel={panel} />
