@@ -116,6 +116,8 @@ export interface FoldMethod {
   turn: number;
   /** From which fold on the paper is narrow enough for the close-up camera. */
   narrowAt: number;
+  /** How the camera frames the paper between the first fold and narrowAt. */
+  foldedView: "folded" | "halved";
   sectors: readonly Sector[];
   /** Which way to turn each fold's flap about its line, so it lifts toward +z (the viewer). */
   lift: readonly number[];
@@ -189,6 +191,7 @@ export const FOLD_METHODS: readonly FoldMethod[] = [
     kept: [0, 1],
     turn: 0,
     narrowAt: 3,
+    foldedView: "folded",
     steps: [
       {
         title: "Fold corner to corner",
@@ -210,6 +213,7 @@ export const FOLD_METHODS: readonly FoldMethod[] = [
     kept: polar(1, 105 * DEG),
     turn: -15 * DEG,
     narrowAt: 4,
+    foldedView: "halved",
     steps: [
       {
         title: "Fold in half",

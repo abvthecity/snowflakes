@@ -41,9 +41,11 @@ interface View {
   target: THREE.Vector3;
   fit: readonly [number, number];
 }
-const VIEWS: Record<"flat" | "folded" | "cutting" | "open", View> = {
+const VIEWS: Record<"flat" | "folded" | "halved" | "cutting" | "open", View> = {
   flat: { position: new THREE.Vector3(0, -1.6, 3.6), target: new THREE.Vector3(0, 0, 0), fit: [1.35, 1.2] },
   folded: { position: new THREE.Vector3(0, -0.5, 3.1), target: new THREE.Vector3(0, 0.35, 0), fit: [1.1, 0.85] },
+  // Folded in half first, the paper sits above its folded edge and reaches higher.
+  halved: { position: new THREE.Vector3(0, -0.2, 3.1), target: new THREE.Vector3(0, 0.62, 0), fit: [1.1, 0.85] },
   cutting: { position: new THREE.Vector3(0, 0.68, 2.25), target: WEDGE_CENTRE, fit: [0.45, 0.78] },
   open: { position: new THREE.Vector3(0.4, -0.6, 3.4), target: new THREE.Vector3(0, 0, 0), fit: [1.1, 1.1] },
 };
@@ -52,12 +54,13 @@ const VIEWS: Record<"flat" | "folded" | "cutting" | "open", View> = {
 const HALF_FOV = (40 / 2) * (Math.PI / 180);
 
 function viewFor(stage: Stage, folds: number, method: FoldMethod) {
-  if (stage === "still") return STILL_FOLD! >= 3.5 ? VIEWS.cutting : VIEWS.open;
+  const folded = method.foldedView === "halved" ? VIEWS.halved : VIEWS.folded;
+  if (stage === "still") return STILL_FOLD! >= 3.5 ? VIEWS.cutting : STILL_FOLD! >= 1 ? folded : VIEWS.open;
   if (stage === "cutting" || stage === "trimming") return VIEWS.cutting;
   if (stage === "open" || stage === "unfolding") return VIEWS.open;
   // While folding, frame the paper as it shrinks: whole sheet, half, wedge.
   if (folds >= method.narrowAt) return VIEWS.cutting;
-  if (folds >= 1) return VIEWS.folded;
+  if (folds >= 1) return folded;
   return VIEWS.flat;
 }
 
