@@ -8,6 +8,8 @@ export interface Anchor {
   point: Vec2;
   /** Outgoing handle, relative to the point. The incoming handle is its mirror. */
   handle: Vec2;
+  /** When it was placed (`performance.now()`), for the recording. */
+  at?: number;
 }
 
 /** Points along the cubic Bézier from anchor a to anchor b, excluding b itself. */

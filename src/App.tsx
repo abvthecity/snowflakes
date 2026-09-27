@@ -6,12 +6,15 @@ import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { CutMask } from "./cuts";
 import { CuttingBoard, type CutTool } from "./CuttingBoard";
 import { TRIM_CUT, TRIM_LINE } from "./folds";
-import { outline, type Anchor } from "./penPath";
+import { type Anchor } from "./penPath";
+import type { Vec2 } from "./folds";
 import { Paper } from "./Paper";
 import { Snowfall } from "./Snowfall";
 import { Stroke } from "./Stroke";
 import { webgpu } from "./gpu";
 import { randomCuts } from "./randomCuts";
+import { Recorder, cutShape, drawTime, finalPaper, outlineCut, penCut, type CutKind, type Recording, type TimelineEvent } from "./timeline";
+import { loadSnowflake, saveSnowflake, shareUrl } from "./api";
 
 type Stage = "flat" | "folding" | "trimming" | "cutting" | "unfolding" | "open" | "still";
 
@@ -23,6 +26,8 @@ const DEMO = PARAMS.get("demo");
 //   &lite          skip shadows and antialiasing (software renderers, slow GPUs)
 const LITE = PARAMS.has("lite");
 const STILL_FOLD = PARAMS.has("fold") ? Math.min(4, Math.max(0, Number(PARAMS.get("fold")))) : null;
+//   ?s=<id>        open a saved snowflake, which can replay how it was cut
+const SHARED = PARAMS.get("s");
 
 /** Seconds per fold. */
 const FOLD_TIME = 0.9;
@@ -114,13 +119,24 @@ function CameraRig({
 }
 
 /** Drives the fold amount toward its target (0 flat, 4 fully folded) and reports when it arrives. */
-function FoldDriver({ fold, target, onArrive }: { fold: React.RefObject<number>; target: number; onArrive: () => void }) {
+function FoldDriver({
+  fold,
+  target,
+  speed,
+  onArrive,
+}: {
+  fold: React.RefObject<number>;
+  target: number;
+  /** Folds this many times faster (skipping through a replay). */
+  speed: React.RefObject<number>;
+  onArrive: () => void;
+}) {
   const arrived = useRef(true);
   useEffect(() => {
     arrived.current = fold.current === target;
   }, [target, fold]);
   useFrame((_, dt) => {
-    const step = Math.min(dt, 0.25) / FOLD_TIME;
+    const step = (Math.min(dt, 0.25) / FOLD_TIME) * speed.current;
     const f = fold.current;
     if (f === target) {
       if (!arrived.current) {
@@ -218,15 +234,34 @@ const COPY: Record<Stage, { title: string; body: string }> = {
   open: { title: "Your snowflake", body: "Drag to turn it. Fold it back up to keep cutting." },
 };
 
+const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
+const nextFrame = () => new Promise((done) => requestAnimationFrame(done));
+
+type SaveState = { state: "idle" } | { state: "saving" } | { state: "saved"; id: string; copied?: boolean } | { state: "error"; message: string };
+
 export function App() {
   const mask = useMemo(() => new CutMask(), []);
+  const recorder = useMemo(() => new Recorder(), []);
   const [stage, setStage] = useState<Stage>("flat");
   const [cuts, setCuts] = useState(0);
   /** How many folds the paper is heading for, 0 to 4. */
   const [folds, setFolds] = useState(0);
   const [tool, setTool] = useState<CutTool>("freehand");
   const [anchors, setAnchors] = useState<Anchor[]>([]);
+  const [save, setSave] = useState<SaveState>({ state: "idle" });
+  /** Opening a saved snowflake from the link: loading, or why it failed. */
+  const [opening, setOpening] = useState<"loading" | "missing" | null>(SHARED ? "loading" : null);
+  /** Whether the paper on screen is someone's saved snowflake, untouched since it opened. */
+  const [shared, setShared] = useState(false);
+  const [replaying, setReplaying] = useState(false);
+  /** The cut being drawn in a replay. */
+  const [ghost, setGhost] = useState<Vec2[]>([]);
   const fold = useRef(0);
+  const foldSpeed = useRef(1);
+  /** Set to skip the rest of a replay; each step then happens at once. */
+  const skip = useRef(false);
+  /** Resolved when the paper arrives at its fold target, for replays to wait on. */
+  const arrivals = useRef<(() => void)[]>([]);
   const controls = useRef<OrbitControlsImpl>(null);
   const panel = useRef<HTMLDivElement>(null);
 
@@ -249,6 +284,34 @@ export function App() {
     }
   }, [mask]);
 
+  // Open a saved snowflake: lay its cuts on the paper and unfold it.
+  useEffect(() => {
+    if (!SHARED) return;
+    let live = true;
+    loadSnowflake(SHARED).then((recording) => {
+      if (!live) return;
+      if (!recording) {
+        setOpening("missing");
+        return;
+      }
+      const paper = finalPaper(recording.events);
+      mask.clear();
+      if (paper.trimmed) mask.trim(TRIM_CUT);
+      for (const c of paper.cuts) mask.cut(c);
+      setCuts(mask.count);
+      recorder.resume(recording);
+      setSave({ state: "saved", id: SHARED });
+      setShared(true);
+      setOpening(null);
+      fold.current = 4;
+      setFolds(4);
+      setStage("unfolding");
+    });
+    return () => {
+      live = false;
+    };
+  }, [mask, recorder]);
+
   const onArrive = () => {
     setStage((s) => {
       if (s === "unfolding") return "open";
@@ -256,23 +319,148 @@ export function App() {
       if (folds < FOLD_STEPS.length) return "flat";
       return mask.isTrimmed ? "cutting" : "trimming";
     });
+    for (const done of arrivals.current.splice(0)) done();
   };
 
-  const copy = stage === "flat" ? FOLD_STEPS[folds] : COPY[stage];
+  // Everything that changes the paper, shared by the buttons and replays.
+  const act = {
+    fold() {
+      setFolds((f) => f + 1);
+      setStage("folding");
+    },
+    trim() {
+      mask.trim(TRIM_CUT);
+      setStage("cutting");
+    },
+    cut(tool: CutKind, pts: number[]) {
+      mask.cut(cutShape({ t: 0, k: "cut", tool, pts }).points);
+      setCuts(mask.count);
+    },
+    undo() {
+      mask.undo();
+      setCuts(mask.count);
+    },
+    unfold() {
+      setStage("unfolding");
+    },
+    refold() {
+      setFolds(FOLD_STEPS.length);
+      setStage("folding");
+    },
+  };
+
+  /** Do it, and add it to the recording. The paper has changed, so any saved link no longer matches. */
+  const record = (e: Parameters<Recorder["add"]>[0]) => {
+    recorder.add(e);
+    if (e.k === "cut") act.cut(e.tool, e.pts);
+    else act[e.k]();
+    if (save.state !== "idle") setSave({ state: "idle" });
+    if (shared) setShared(false);
+    if (SHARED) history.replaceState(null, "", location.pathname);
+  };
+
+  const newPaper = () => {
+    mask.clear();
+    setCuts(0);
+    fold.current = 0;
+    setFolds(0);
+    setAnchors([]);
+    setStage("flat");
+  };
+
+  /** Plays the recording back on fresh paper, at the pace it was made (long pauses shortened). */
+  const replay = async (recording: Recording) => {
+    skip.current = false;
+    foldSpeed.current = 1;
+    setReplaying(true);
+    newPaper();
+    const wait = async (ms: number) => {
+      if (!skip.current) await sleep(ms);
+    };
+    const arrive = () => new Promise<void>((done) => arrivals.current.push(done));
+    await wait(700);
+    let prev = recording.events[0]?.t ?? 0;
+    for (const e of recording.events as TimelineEvent[]) {
+      await wait(Math.min(1200, Math.max(150, e.t - prev)));
+      prev = e.t;
+      if (skip.current) foldSpeed.current = 40;
+      if (e.k === "cut") {
+        // Draw the cut again, sped up if it took a while.
+        const total = drawTime(e);
+        const scale = Math.max(1, total / 2500);
+        const start = performance.now();
+        while (!skip.current && total > 0) {
+          const ms = (performance.now() - start) * scale;
+          if (ms >= total) break;
+          setGhost(cutShape(e, ms).points);
+          await nextFrame();
+        }
+        setGhost([]);
+        act.cut(e.tool, e.pts);
+        if (e.tool !== "surprise") await wait(250);
+      } else {
+        const moves = e.k === "fold" || e.k === "refold" || e.k === "unfold";
+        const arrived = moves ? arrive() : null;
+        act[e.k]();
+        if (arrived) await arrived;
+      }
+    }
+    foldSpeed.current = 1;
+    setReplaying(false);
+  };
+
+  const onSave = async () => {
+    setSave({ state: "saving" });
+    const result = await saveSnowflake(recorder.recording);
+    if ("error" in result) {
+      setSave({ state: "error", message: result.error });
+      return;
+    }
+    history.replaceState(null, "", shareUrl(result.id));
+    setSave({ state: "saved", id: result.id });
+  };
+
+  const copyLink = async (id: string) => {
+    const url = shareUrl(id);
+    try {
+      if (navigator.share && matchMedia("(pointer: coarse)").matches) await navigator.share({ title: "Paper snowflake", url });
+      else await navigator.clipboard.writeText(url);
+      setSave({ state: "saved", id, copied: true });
+    } catch {
+      // Dismissed the share sheet, or no clipboard: the link is on screen to copy by hand.
+    }
+  };
+
+  const copy = opening
+    ? opening === "loading"
+      ? { title: "Opening a snowflake…", body: "" }
+      : { title: "Snowflake not found", body: "That link doesn't lead to a saved snowflake. Fold a new one here instead." }
+    : replaying
+      ? stage === "flat"
+        ? { title: "Replaying…", body: FOLD_STEPS[folds]?.body ?? "" }
+        : { title: "Replaying…", body: COPY[stage].body }
+      : stage === "flat"
+        ? FOLD_STEPS[folds]
+        : stage === "open" && shared
+          ? { title: "A paper snowflake", body: "Someone folded and cut this. Watch how they made it, or fold it back up and keep cutting." }
+          : COPY[stage];
   const step =
-    stage === "flat"
-      ? folds + 1
-      : stage === "trimming"
-        ? 5
-        : stage === "cutting"
-          ? 6
-          : stage === "open" || stage === "unfolding"
-            ? 7
-            : null;
+    opening || replaying
+      ? null
+      : stage === "flat"
+        ? folds + 1
+        : stage === "trimming"
+          ? 5
+          : stage === "cutting"
+            ? 6
+            : stage === "open" || stage === "unfolding"
+              ? 7
+              : null;
   const busy = stage === "folding" || stage === "unfolding";
+  const canReplay = recorder.events.some((e) => e.k === "cut");
 
   return (
-    <div className="app">
+    <div className="app" data-stage={stage}>
       <Canvas
         shadows={!LITE}
         dpr={LITE ? 1 : [1, 2]}
@@ -309,21 +497,21 @@ export function App() {
           <Paper fold={fold} mask={mask.texture} creased={stage !== "flat" && !(stage === "still" && cuts === 0)} />
         </Sway>
         {stage === "trimming" && <TrimGuide />}
-        {stage === "cutting" && (
+        {stage === "cutting" && !replaying && (
           <CuttingBoard
             tool={tool}
             anchors={anchors}
             setAnchors={setAnchors}
-            onCut={(outline) => {
-              mask.cut(outline);
-              setCuts(mask.count);
-            }}
+            onCut={(pts) => record({ k: "cut", tool, pts })}
           />
+        )}
+        {ghost.length > 1 && (
+          <Stroke points={ghost.map(([x, y]) => [x, y, 0.09] as [number, number, number])} color="#e2483d" lineWidth={2.5} />
         )}
         <Snowfall />
         <Ready />
 
-        <FoldDriver fold={fold} target={foldTarget} onArrive={onArrive} />
+        <FoldDriver fold={fold} target={foldTarget} speed={foldSpeed} onArrive={onArrive} />
         <CameraRig stage={stage} folds={folds} controls={controls} panel={panel} />
         <OrbitControls
           ref={controls}
@@ -342,7 +530,7 @@ export function App() {
         )}
         <h1>{copy.title}</h1>
         {copy.body && <p>{copy.body}</p>}
-        {stage === "cutting" && (
+        {stage === "cutting" && !replaying && (
           <>
             <div className="tools" role="radiogroup" aria-label="Scissors">
               {TOOLS.map((t) => (
@@ -363,95 +551,90 @@ export function App() {
             <p>{TOOLS.find((t) => t.id === tool)!.hint}</p>
           </>
         )}
+        {stage === "open" && !replaying && save.state === "saved" && (
+          <div className="share">
+            <input readOnly value={shareUrl(save.id)} aria-label="Link to this snowflake" onFocus={(e) => e.target.select()} />
+          </div>
+        )}
+        {stage === "open" && !replaying && save.state === "error" && <p className="error">Couldn't save: {save.message}</p>}
         <div className="actions">
-          {stage === "flat" && (
-            <button
-              onClick={() => {
-                setFolds(folds + 1);
-                setStage("folding");
-              }}
-            >
-              Fold
+          {replaying && (
+            <button className="quiet" onClick={() => (skip.current = true)}>
+              Skip to the end
             </button>
           )}
-          {stage === "trimming" && (
-            <button
-              onClick={() => {
-                mask.trim(TRIM_CUT);
-                setStage("cutting");
-              }}
-            >
-              Trim
-            </button>
-          )}
-          {stage === "cutting" && anchors.length > 0 && (
+          {!replaying && opening !== "loading" && (
             <>
-              <button
-                disabled={anchors.length < 3}
-                onClick={() => {
-                  mask.cut(outline(anchors, true));
-                  setCuts(mask.count);
-                  setAnchors([]);
-                }}
-              >
-                Cut
-              </button>
-              <button className="quiet" onClick={() => setAnchors([])}>
-                Cancel
-              </button>
+              {stage === "flat" && <button onClick={() => record({ k: "fold" })}>Fold</button>}
+              {stage === "trimming" && <button onClick={() => record({ k: "trim" })}>Trim</button>}
+              {stage === "cutting" && anchors.length > 0 && (
+                <>
+                  <button
+                    disabled={anchors.length < 3}
+                    onClick={() => {
+                      record({ k: "cut", tool, pts: penCut(anchors) });
+                      setAnchors([]);
+                    }}
+                  >
+                    Cut
+                  </button>
+                  <button className="quiet" onClick={() => setAnchors([])}>
+                    Cancel
+                  </button>
+                </>
+              )}
+              {stage === "cutting" && anchors.length === 0 && (
+                <>
+                  <button disabled={cuts === 0} onClick={() => record({ k: "unfold" })}>
+                    Unfold
+                  </button>
+                  <button
+                    className="quiet"
+                    onClick={() => {
+                      for (const c of randomCuts(3)) record({ k: "cut", tool: "surprise", pts: outlineCut(c) });
+                    }}
+                  >
+                    Surprise me
+                  </button>
+                  <button className="quiet" disabled={cuts === 0} onClick={() => record({ k: "undo" })}>
+                    Undo
+                  </button>
+                </>
+              )}
+              {stage === "open" && (
+                <>
+                  {save.state === "saved" ? (
+                    <button onClick={() => copyLink(save.id)}>{save.copied ? "Link copied" : "Share link"}</button>
+                  ) : (
+                    <button disabled={save.state === "saving"} onClick={onSave}>
+                      {save.state === "saving" ? "Saving…" : "Save"}
+                    </button>
+                  )}
+                  {canReplay && (
+                    <button className="quiet" onClick={() => replay(recorder.recording)}>
+                      Replay
+                    </button>
+                  )}
+                  <button className="quiet" onClick={() => record({ k: "refold" })}>
+                    Fold back up
+                  </button>
+                  <button
+                    className="quiet"
+                    onClick={() => {
+                      recorder.reset();
+                      setSave({ state: "idle" });
+                      setShared(false);
+                      if (SHARED || save.state === "saved") history.replaceState(null, "", location.pathname);
+                      newPaper();
+                    }}
+                  >
+                    New paper
+                  </button>
+                </>
+              )}
             </>
           )}
-          {stage === "cutting" && anchors.length === 0 && (
-            <>
-              <button disabled={cuts === 0} onClick={() => setStage("unfolding")}>
-                Unfold
-              </button>
-              <button
-                className="quiet"
-                onClick={() => {
-                  for (const c of randomCuts(3)) mask.cut(c);
-                  setCuts(mask.count);
-                }}
-              >
-                Surprise me
-              </button>
-              <button
-                className="quiet"
-                disabled={cuts === 0}
-                onClick={() => {
-                  mask.undo();
-                  setCuts(mask.count);
-                }}
-              >
-                Undo
-              </button>
-            </>
-          )}
-          {stage === "open" && (
-            <>
-              <button
-                onClick={() => {
-                  setFolds(FOLD_STEPS.length);
-                  setStage("folding");
-                }}
-              >
-                Fold back up
-              </button>
-              <button
-                className="quiet"
-                onClick={() => {
-                  mask.clear();
-                  setCuts(0);
-                  fold.current = 0;
-                  setFolds(0);
-                  setStage("flat");
-                }}
-              >
-                New paper
-              </button>
-            </>
-          )}
-          {busy && <span className="hint">…</span>}
+          {busy && !replaying && <span className="hint">…</span>}
         </div>
       </div>
     </div>

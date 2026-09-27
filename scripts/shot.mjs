@@ -136,6 +136,37 @@ try {
   await page.screenshot({ path: new URL("10-clicked-through.png", out).pathname });
   console.log("shots/10-clicked-through.png");
 
+  // Save it, open the link, and replay how it was made. vite preview has no
+  // Pages Functions, so the API is stood in for here; it keeps what was
+  // posted and serves it back, so the recording makes the round trip.
+  let saved = null;
+  await page.route("**/api/snowflakes", async (route) => {
+    saved = route.request().postDataJSON();
+    await route.fulfill({ status: 201, json: { id: "shot1" } });
+  });
+  await page.getByRole("button", { name: "Save" }).click();
+  const link = await page.getByRole("textbox", { name: "Link to this snowflake" }).inputValue({ timeout: 30_000 });
+  if (!link.endsWith("?s=shot1")) errors.push(`save: link is ${link}`);
+  if (!saved?.events?.some((e) => e.k === "cut" && e.tool === "curve")) errors.push("save: the recording has no curve cut");
+  await page.close();
+
+  const shared = await open("?s=shot1&lite", { width: 900, height: 640 });
+  await shared.route("**/api/snowflakes/shot1", (route) => route.fulfill({ json: { id: "shot1", createdAt: 0, recording: saved } }));
+  await shared.getByRole("button", { name: "Replay" }).click({ timeout: 90_000 });
+  await shared.getByRole("heading", { name: "Replaying…" }).waitFor();
+  // Let it reach the cutting, then catch a cut being drawn again.
+  await shared.getByRole("button", { name: "Skip to the end" }).waitFor();
+  await shared.locator(".app[data-stage=cutting]").waitFor({ timeout: 180_000 });
+  await frames(shared, 4);
+  await shared.screenshot({ path: new URL("10b-replaying.png", out).pathname });
+  console.log("shots/10b-replaying.png");
+  await shared.getByRole("button", { name: "Skip to the end" }).click();
+  await shared.getByRole("button", { name: "Fold back up" }).waitFor({ timeout: 180_000 });
+  await frames(shared, 2);
+  await shared.screenshot({ path: new URL("10c-replayed.png", out).pathname });
+  console.log("shots/10c-replayed.png");
+  await shared.close();
+
   // The same flow on a phone, by touch: taps for the buttons and corners,
   // finger drags for the freehand loop, a curve handle and turning the result.
   const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });

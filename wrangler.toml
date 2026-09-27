@@ -1,0 +1,22 @@
+# Cloudflare Pages config for the `snowflakes` project: the built app in dist/,
+# the API in functions/, and a D1 database for saved snowflakes.
+#
+# Production and previews use separate databases, so pull requests never write
+# to the real one. The deploy workflow creates them if needed and fills in
+# their ids (scripts/d1.sh); locally, `pnpm dlx wrangler pages dev` after
+# `pnpm dlx wrangler d1 migrations apply DB --local` uses a local database.
+name = "snowflakes"
+pages_build_output_dir = "dist"
+compatibility_date = "2026-09-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "snowflakes"
+database_id = "production-id"
+migrations_dir = "migrations"
+
+[[env.preview.d1_databases]]
+binding = "DB"
+database_name = "snowflakes-preview"
+database_id = "preview-id"
+migrations_dir = "migrations"

@@ -12,6 +12,7 @@ import type { ThreeEvent } from "@react-three/fiber";
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import type { Vec2 } from "./folds";
 import { outline, type Anchor } from "./penPath";
+import { freehandCut, penCut } from "./timeline";
 
 export type CutTool = "freehand" | "straight" | "curve";
 
@@ -42,15 +43,17 @@ export function CuttingBoard({
   tool: CutTool;
   anchors: Anchor[];
   setAnchors: Dispatch<SetStateAction<Anchor[]>>;
-  onCut: (outline: Vec2[]) => void;
+  /** A finished cut with the current tool, as the timeline records it (see timeline.ts). */
+  onCut: (pts: number[]) => void;
 }) {
   const [stroke, setStroke] = useState<Vec2[]>([]);
+  const times = useRef<number[]>([]);
   const [hover, setHover] = useState<Vec2 | null>(null);
   const drawing = useRef(false);
   const dragging = useRef(false);
 
   const finishPen = () => {
-    if (anchors.length > 2) onCut(outline(anchors, true));
+    if (anchors.length > 2) onCut(penCut(anchors));
     setAnchors([]);
   };
 
@@ -73,6 +76,7 @@ export function CuttingBoard({
     const p = pointOf(e);
     if (tool === "freehand") {
       drawing.current = true;
+      times.current = [performance.now()];
       setStroke([p]);
       return;
     }
@@ -81,7 +85,7 @@ export function CuttingBoard({
       finishPen();
       return;
     }
-    setAnchors((a) => [...a, { point: p, handle: [0, 0] }]);
+    setAnchors((a) => [...a, { point: p, handle: [0, 0], at: performance.now() }]);
     dragging.current = tool === "curve";
   };
 
@@ -92,7 +96,9 @@ export function CuttingBoard({
       if (!drawing.current) return;
       setStroke((s) => {
         const last = s[s.length - 1];
-        return last && dist(p, last) < 0.006 ? s : [...s, p];
+        if (last && dist(p, last) < 0.006) return s;
+        times.current = [...times.current.slice(0, s.length), performance.now()];
+        return [...s, p];
       });
       return;
     }
@@ -111,7 +117,7 @@ export function CuttingBoard({
     if (!drawing.current) return;
     drawing.current = false;
     setStroke((s) => {
-      if (s.length > 2) onCut(s);
+      if (s.length > 2) onCut(freehandCut(s, times.current));
       return [];
     });
   };

@@ -67,6 +67,18 @@ button {
 button.quiet { background: transparent; color: var(--ink); border-color: rgba(255, 255, 255, 0.25); }
 button:disabled { opacity: 0.4; cursor: default; }
 .hint { color: var(--muted); }
+.error { color: #ffb4a8; }
+.share { margin: 0 0 10px; }
+.share input {
+  width: 100%;
+  font: inherit;
+  font-size: 14px;
+  padding: 7px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ink);
+}
 @media (max-width: 520px) {
   .panel {
     left: 12px;
