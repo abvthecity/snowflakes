@@ -4,8 +4,11 @@
 // the folded layers at once, and appears 16 times when the paper opens.
 import * as THREE from "three";
 import { SECTORS, invert, type Vec2 } from "./folds";
+import { drawScraps, scraps } from "./pieces";
 
 export const MASK_SIZE = 2048;
+/** Resolution of the raster that finds severed pieces: about the mask's. */
+const SCRAP_PER_UNIT = MASK_SIZE / 2;
 
 /** Flat-square coordinates ([-1, 1]², y up) to mask pixels (y down). */
 function toPixels(ctx: CanvasRenderingContext2D) {
@@ -19,6 +22,7 @@ export class CutMask {
   private readonly ctx: CanvasRenderingContext2D;
   private cuts: Vec2[][] = [];
   private trimmed: readonly Vec2[] | null = null;
+  private scrap: HTMLCanvasElement | null = null;
 
   constructor() {
     this.canvas = document.createElement("canvas");
@@ -41,6 +45,11 @@ export class CutMask {
     return this.cuts;
   }
 
+  /** Pieces the cuts have severed, and so tossed: see pieces.ts. Null when the paper is in one piece. */
+  get scraps(): { canvas: HTMLCanvasElement; perUnit: number } | null {
+    return this.scrap && { canvas: this.scrap, perUnit: SCRAP_PER_UNIT };
+  }
+
   get isTrimmed() {
     return this.trimmed !== null;
   }
@@ -58,6 +67,7 @@ export class CutMask {
     if (outline.length < 3) return;
     this.cuts.push(outline);
     this.paint(outline);
+    this.toss();
     this.texture.needsUpdate = true;
   }
 
@@ -79,7 +89,15 @@ export class CutMask {
     ctx.fillRect(0, 0, MASK_SIZE, MASK_SIZE);
     if (this.trimmed) this.paint(this.trimmed);
     for (const c of this.cuts) this.paint(c);
+    this.toss();
     this.texture.needsUpdate = true;
+  }
+
+  /** Cut away every piece that no longer hangs on to the snowflake. */
+  private toss() {
+    this.scrap = this.cuts.length ? scraps(this.cuts, SCRAP_PER_UNIT) : null;
+    const scrap = this.scrap;
+    if (scrap) this.paint((ctx) => drawScraps(ctx, scrap, SCRAP_PER_UNIT));
   }
 
   /**
@@ -87,7 +105,7 @@ export class CutMask {
    * to where that sector lies in the flat square and cut only within it, so a
    * cut across a fold opens into the neighbouring sector as its mirror image.
    */
-  private paint(outline: readonly Vec2[]) {
+  private paint(shape: readonly Vec2[] | ((ctx: CanvasRenderingContext2D) => void)) {
     const { ctx } = this;
     ctx.fillStyle = "#000";
     for (const s of SECTORS) {
@@ -100,10 +118,13 @@ export class CutMask {
       ctx.clip();
       // Canvas transform(a, b, c, d, e, f) maps (x, y) to (ax + cy, bx + dy).
       ctx.transform(a, c, b, d, 0, 0);
-      ctx.beginPath();
-      for (const [x, y] of outline) ctx.lineTo(x, y);
-      ctx.closePath();
-      ctx.fill();
+      if (typeof shape === "function") shape(ctx);
+      else {
+        ctx.beginPath();
+        for (const [x, y] of shape) ctx.lineTo(x, y);
+        ctx.closePath();
+        ctx.fill();
+      }
       ctx.restore();
     }
   }

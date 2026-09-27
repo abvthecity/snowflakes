@@ -21,6 +21,7 @@ import { useThree } from "@react-three/fiber";
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import * as THREE from "three";
 import { CutPreview } from "./CutPreview";
+import type { CutMask } from "./cuts";
 import type { Vec2 } from "./folds";
 import { fitStroke, isSmooth, outline, toggleSmooth, type Anchor } from "./penPath";
 import { Stroke } from "./Stroke";
@@ -76,14 +77,14 @@ function Dot({ at, size = 0.009, color = RED }: { at: Vec2; size?: number; color
 export function CuttingBoard({
   path,
   setPath,
-  holes,
+  mask,
   onClose,
   onLift,
 }: {
   path: CutPath;
   setPath: Dispatch<SetStateAction<CutPath>>;
-  /** The cuts already on the paper, so the preview leaves them clear. */
-  holes: readonly (readonly Vec2[])[];
+  /** The paper's cuts so far, so the preview leaves them clear. */
+  mask: CutMask;
   /** Cut along the closed shape (and make it the path, closed). */
   onClose: (anchors: Anchor[]) => void;
   /** Take the last cut back off the paper while it is reshaped; `onClose` puts it back. */
@@ -97,11 +98,23 @@ export function CuttingBoard({
   const [touch, setTouch] = useState(false);
   /** A closed shape being reshaped, and so off the paper for now. */
   const [lifted, setLifted] = useState(false);
+  /** The point last pressed; its curve handles show, and can be pulled. */
+  const [picked, setPicked] = useState<number | null>(null);
 
   // The wedge is seen head-on, so one CSS pixel is this many paper units everywhere on it.
   const perPixel = (2 * (camera.position.z - Z) * Math.tan(THREE.MathUtils.degToRad((camera as THREE.PerspectiveCamera).fov / 2))) / height;
   const reach = (touch ? REACH_TOUCH : REACH) * perPixel;
   const { anchors, closed } = path;
+  // Handles show on the point last pressed and, with a mouse, the point nearest the pointer,
+  // rather than on every point of a smoothed freehand loop at once.
+  let near = -1;
+  if (hover && !touch) {
+    let best = reach * 3;
+    anchors.forEach((a, i) => {
+      if (dist(hover, a.point) < best) (best = dist(hover, a.point)), (near = i);
+    });
+  }
+  const showsHandles = (i: number) => isSmooth(anchors[i]) && (i === picked || i === near);
 
   const close = (a: Anchor[]) => {
     if (a.length > 2) onClose(a);
@@ -126,7 +139,7 @@ export function CuttingBoard({
     let nearest = reach;
     anchors.forEach((a, index) => {
       const parts: [Hit["part"], Vec2, number][] = [[0, a.point, 0.8]];
-      if (isSmooth(a)) parts.push([1, add(a.point, a.handle), 1], [-1, sub(a.point, a.handle), 1]);
+      if (showsHandles(index)) parts.push([1, add(a.point, a.handle), 1], [-1, sub(a.point, a.handle), 1]);
       for (const [part, at, weight] of parts) {
         const d = dist(p, at) * weight;
         if (d < nearest) {
@@ -146,7 +159,10 @@ export function CuttingBoard({
     setTouch(isTouch);
     if (isTouch) setHover(null);
     const at = pointOf(e);
-    gesture.current = { kind: "press", id: e.pointerId, at, x: e.nativeEvent.clientX, y: e.nativeEvent.clientY, hit: hitTest(at) };
+    const hit = hitTest(at);
+    if (hit?.part === 0) setPicked(hit.index);
+    else if (!hit) setPicked(null);
+    gesture.current = { kind: "press", id: e.pointerId, at, x: e.nativeEvent.clientX, y: e.nativeEvent.clientY, hit };
   };
 
   const move = (e: ThreeEvent<PointerEvent>) => {
@@ -279,7 +295,7 @@ export function CuttingBoard({
         <meshBasicMaterial transparent opacity={0} depthWrite={false} />
       </mesh>
 
-      <CutPreview shape={shape} holes={holes} z={Z - 0.004} />
+      <CutPreview shape={shape} mask={mask} z={Z - 0.004} />
 
       {drawing && (
         <Stroke
@@ -309,7 +325,7 @@ export function CuttingBoard({
             />
           )}
           {anchors.map((a, i) =>
-            isSmooth(a) ? (
+            showsHandles(i) ? (
               <group key={`h${i}`}>
                 <Stroke points={lift([sub(a.point, a.handle), add(a.point, a.handle)])} color={BLUE} lineWidth={1} />
                 <Dot at={add(a.point, a.handle)} size={size * 0.75} color={BLUE} />

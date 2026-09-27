@@ -146,6 +146,18 @@ try {
   for (const [x, y] of [[430, 410], [428, 425], [418, 436], [405, 440]]) await page.mouse.move(x, y);
   await page.mouse.up();
   await page.getByRole("button", { name: "Cut", exact: true }).click();
+  // A band right across the top severs the tip: it fades with the band before
+  // the cut, and falls away with it after.
+  for (const [x, y] of [[330, 243], [560, 285], [560, 302]]) await page.mouse.click(x, y);
+  await page.mouse.move(330, 262, { steps: 2 });
+  await frames(page, 3);
+  await page.screenshot({ path: new URL("9d-severed-preview.png", out).pathname });
+  console.log("shots/9d-severed-preview.png");
+  for (const [x, y] of [[330, 262], [330, 243]]) await page.mouse.click(x, y);
+  await page.mouse.move(700, 560);
+  await frames(page, 3);
+  await page.screenshot({ path: new URL("9e-severed.png", out).pathname });
+  console.log("shots/9e-severed.png");
   await page.getByRole("button", { name: "Surprise me" }).click();
   await page.getByRole("button", { name: "Unfold" }).click();
   await page.getByRole("button", { name: "Fold back up" }).waitFor({ timeout: 90_000 });

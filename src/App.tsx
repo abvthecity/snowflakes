@@ -204,7 +204,7 @@ const CUT_HINTS = {
   start:
     "Tap corner after corner for straight cuts, or drag to draw. Close the shape on its first point to cut through all twelve layers.",
   open: "Keep tapping or drawing; the faded part is what falls away. Tap the first point (or press Cut) to cut, or tap a point to round it.",
-  closed: "Drag a point or a blue handle to reshape the cut, tap a point to round or sharpen it, or start the next cut anywhere.",
+  closed: "Drag a point or its blue handles to reshape the cut, tap a point to round or sharpen it, or start the next cut anywhere.",
 };
 
 const COPY: Record<Stage, { title: string; body: string }> = {
@@ -316,7 +316,7 @@ export function App() {
           <CuttingBoard
             path={path}
             setPath={setPath}
-            holes={mask.outlines}
+            mask={mask}
             onClose={(anchors) => {
               mask.cut(outline(anchors, true));
               setCuts(mask.count);
