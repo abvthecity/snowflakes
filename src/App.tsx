@@ -1,10 +1,12 @@
-import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Environment, Lightformer, Line, OrbitControls } from "@react-three/drei";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { CutMask } from "./cuts";
-import { TRIM_CUT, TRIM_LINE, type Vec2 } from "./folds";
+import { CuttingBoard, type CutTool } from "./CuttingBoard";
+import { TRIM_CUT, TRIM_LINE } from "./folds";
+import { outline, type Anchor } from "./penPath";
 import { Paper } from "./Paper";
 import { Snowfall } from "./Snowfall";
 import { randomCuts } from "./randomCuts";
@@ -25,12 +27,25 @@ const FOLD_TIME = 0.9;
 
 /** Where the folded wedge sits, and a camera that frames it head-on for cutting. */
 const WEDGE_CENTRE = new THREE.Vector3(0, 0.68, 0);
-const VIEWS = {
-  flat: { position: new THREE.Vector3(0, -1.6, 3.6), target: new THREE.Vector3(0, 0, 0) },
-  folded: { position: new THREE.Vector3(0, -0.5, 3.1), target: new THREE.Vector3(0, 0.35, 0) },
-  cutting: { position: new THREE.Vector3(0, 0.68, 2.25), target: WEDGE_CENTRE },
-  open: { position: new THREE.Vector3(0.4, -0.6, 3.4), target: new THREE.Vector3(0, 0, 0) },
+/**
+ * Each view is a camera position and target, plus how far the content reaches
+ * across (`fit[0]`) and up (`fit[1]`) from the target, so a narrow phone
+ * screen can back the camera off until it all fits.
+ */
+interface View {
+  position: THREE.Vector3;
+  target: THREE.Vector3;
+  fit: readonly [number, number];
+}
+const VIEWS: Record<"flat" | "folded" | "cutting" | "open", View> = {
+  flat: { position: new THREE.Vector3(0, -1.6, 3.6), target: new THREE.Vector3(0, 0, 0), fit: [1.35, 1.2] },
+  folded: { position: new THREE.Vector3(0, -0.5, 3.1), target: new THREE.Vector3(0, 0.35, 0), fit: [1.1, 0.85] },
+  cutting: { position: new THREE.Vector3(0, 0.68, 2.25), target: WEDGE_CENTRE, fit: [0.45, 0.78] },
+  open: { position: new THREE.Vector3(0.4, -0.6, 3.4), target: new THREE.Vector3(0, 0, 0), fit: [1.1, 1.1] },
 };
+
+/** Half the camera's vertical field of view, in radians. */
+const HALF_FOV = (40 / 2) * (Math.PI / 180);
 
 function viewFor(stage: Stage, folds: number) {
   if (stage === "still") return STILL_FOLD! >= 3.5 ? VIEWS.cutting : VIEWS.open;
@@ -47,25 +62,51 @@ function CameraRig({
   stage,
   folds,
   controls,
+  panel,
 }: {
   stage: Stage;
   folds: number;
   controls: React.RefObject<OrbitControlsImpl | null>;
+  panel: React.RefObject<HTMLDivElement | null>;
 }) {
-  const { camera } = useThree();
+  const { camera, size } = useThree();
   const moving = useRef(true);
+  const inset = useRef(0);
+  const goal = useMemo(() => new THREE.Vector3(), []);
+  const offset = useMemo(() => new THREE.Vector3(), []);
   useEffect(() => {
     moving.current = true;
-  }, [stage, folds]);
+  }, [stage, folds, size.width, size.height]);
+
   useFrame((_, dt) => {
     const c = controls.current;
+    const cam = camera as THREE.PerspectiveCamera;
+
+    // On a phone the panel spans the bottom of the screen: aim the view at
+    // the space above it, by shifting the frustum up by half its height.
+    const rect = panel.current?.getBoundingClientRect();
+    const covered = rect && rect.width > size.width * 0.8 ? size.height - rect.top + 8 : 0;
+    if (covered !== inset.current) {
+      inset.current = covered;
+      if (covered) cam.setViewOffset(size.width, size.height, 0, covered / 2, size.width, size.height);
+      else cam.clearViewOffset();
+      moving.current = true;
+    }
+
     if (!moving.current || !c) return;
     const view = viewFor(stage, folds);
+    // Back off until the content fits across a narrow screen and above the panel.
+    const across = view.fit[0] / (Math.tan(HALF_FOV) * cam.aspect);
+    const up = view.fit[1] / (Math.tan(HALF_FOV) * Math.max(0.3, 1 - covered / size.height));
+    offset.copy(view.position).sub(view.target);
+    offset.setLength(Math.max(offset.length(), across, up));
+    goal.copy(view.target).add(offset);
+
     const k = stage === "still" ? 1 : 1 - Math.exp(-dt * 3);
-    camera.position.lerp(view.position, k);
+    camera.position.lerp(goal, k);
     c.target.lerp(view.target, k);
     c.update();
-    if (camera.position.distanceTo(view.position) < 0.002) moving.current = false;
+    if (camera.position.distanceTo(goal) < 0.002) moving.current = false;
   });
   return null;
 }
@@ -89,61 +130,6 @@ function FoldDriver({ fold, target, onArrive }: { fold: React.RefObject<number>;
     fold.current = f < target ? Math.min(target, f + step) : Math.max(target, f - step);
   });
   return null;
-}
-
-/** An invisible sheet over the folded paper that turns pointer strokes into cuts. */
-function CuttingBoard({ onCut }: { onCut: (outline: Vec2[]) => void }) {
-  const [stroke, setStroke] = useState<Vec2[]>([]);
-  const drawing = useRef(false);
-
-  const add = (e: ThreeEvent<PointerEvent>) => {
-    const p: Vec2 = [e.point.x, e.point.y];
-    setStroke((s) => {
-      const last = s[s.length - 1];
-      if (last && Math.hypot(p[0] - last[0], p[1] - last[1]) < 0.006) return s;
-      return [...s, p];
-    });
-  };
-
-  const finish = () => {
-    if (!drawing.current) return;
-    drawing.current = false;
-    setStroke((s) => {
-      if (s.length > 2) onCut(s);
-      return [];
-    });
-  };
-
-  return (
-    <>
-      <mesh
-        position={[0, 0.6, 0.08]}
-        onPointerDown={(e) => {
-          e.stopPropagation();
-          (e.target as Element).setPointerCapture?.(e.pointerId);
-          drawing.current = true;
-          setStroke([]);
-          add(e);
-        }}
-        onPointerMove={(e) => drawing.current && add(e)}
-        onPointerUp={finish}
-        onPointerLeave={finish}
-      >
-        <planeGeometry args={[6, 6]} />
-        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-      </mesh>
-      {stroke.length > 1 && (
-        <Line
-          points={[...stroke, stroke[0]].map(([x, y]) => [x, y, 0.09] as [number, number, number])}
-          color="#e2483d"
-          lineWidth={2.5}
-          dashed
-          dashSize={0.02}
-          gapSize={0.012}
-        />
-      )}
-    </>
-  );
 }
 
 /** The dashed line across the top of the folded paper, where the trim goes. */
@@ -186,6 +172,12 @@ const FOLD_STEPS = [
 
 const STEP_COUNT = FOLD_STEPS.length + 3;
 
+const TOOLS: { id: CutTool; label: string; hint: string }[] = [
+  { id: "freehand", label: "Freehand", hint: "Draw a loop across the folded paper with a finger or the mouse. Letting go cuts it out of all twelve layers." },
+  { id: "straight", label: "Straight", hint: "Tap or click corner after corner, then the first corner again (or press Cut) to cut along straight lines." },
+  { id: "curve", label: "Curve", hint: "Tap for a sharp corner, or press and drag to pull a smooth curve. Tap the first point again (or press Cut) to cut." },
+];
+
 const COPY: Record<Stage, { title: string; body: string }> = {
   flat: FOLD_STEPS[0],
   folding: { title: "Folding…", body: "" },
@@ -193,10 +185,7 @@ const COPY: Record<Stage, { title: string; body: string }> = {
     title: "Trim the top",
     body: "Slice straight across the top of the folded paper, along the dashed line. That is what opens into a hexagon instead of a square.",
   },
-  cutting: {
-    title: "Cut",
-    body: "Draw a closed shape across the folded paper. Wherever it overlaps the paper, the scissors cut through all twelve layers.",
-  },
+  cutting: { title: "Cut", body: "" },
   unfolding: { title: "Unfolding…", body: "" },
   still: { title: "Paper snowflake", body: "" },
   open: { title: "Your snowflake", body: "Drag to turn it. Fold it back up to keep cutting." },
@@ -208,8 +197,11 @@ export function App() {
   const [cuts, setCuts] = useState(0);
   /** How many folds the paper is heading for, 0 to 4. */
   const [folds, setFolds] = useState(0);
+  const [tool, setTool] = useState<CutTool>("freehand");
+  const [anchors, setAnchors] = useState<Anchor[]>([]);
   const fold = useRef(0);
   const controls = useRef<OrbitControlsImpl>(null);
+  const panel = useRef<HTMLDivElement>(null);
 
   const foldTarget =
     stage === "folding" || stage === "trimming" || stage === "cutting" ? folds : stage === "unfolding" ? 0 : fold.current;
@@ -283,6 +275,9 @@ export function App() {
         {stage === "trimming" && <TrimGuide />}
         {stage === "cutting" && (
           <CuttingBoard
+            tool={tool}
+            anchors={anchors}
+            setAnchors={setAnchors}
             onCut={(outline) => {
               mask.cut(outline);
               setCuts(mask.count);
@@ -292,7 +287,7 @@ export function App() {
         <Snowfall />
 
         <FoldDriver fold={fold} target={foldTarget} onArrive={onArrive} />
-        <CameraRig stage={stage} folds={folds} controls={controls} />
+        <CameraRig stage={stage} folds={folds} controls={controls} panel={panel} />
         <OrbitControls
           ref={controls}
           enabled={stage === "flat" || stage === "open" || stage === "still"}
@@ -302,7 +297,7 @@ export function App() {
         />
       </Canvas>
 
-      <div className="panel">
+      <div className="panel" ref={panel}>
         {step && (
           <div className="step">
             Step {step} of {STEP_COUNT}
@@ -310,6 +305,27 @@ export function App() {
         )}
         <h1>{copy.title}</h1>
         {copy.body && <p>{copy.body}</p>}
+        {stage === "cutting" && (
+          <>
+            <div className="tools" role="radiogroup" aria-label="Scissors">
+              {TOOLS.map((t) => (
+                <button
+                  key={t.id}
+                  role="radio"
+                  aria-checked={tool === t.id}
+                  className={tool === t.id ? "tool on" : "tool"}
+                  onClick={() => {
+                    setTool(t.id);
+                    setAnchors([]);
+                  }}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            <p>{TOOLS.find((t) => t.id === tool)!.hint}</p>
+          </>
+        )}
         <div className="actions">
           {stage === "flat" && (
             <button
@@ -331,7 +347,24 @@ export function App() {
               Trim
             </button>
           )}
-          {stage === "cutting" && (
+          {stage === "cutting" && anchors.length > 0 && (
+            <>
+              <button
+                disabled={anchors.length < 3}
+                onClick={() => {
+                  mask.cut(outline(anchors, true));
+                  setCuts(mask.count);
+                  setAnchors([]);
+                }}
+              >
+                Cut
+              </button>
+              <button className="quiet" onClick={() => setAnchors([])}>
+                Cancel
+              </button>
+            </>
+          )}
+          {stage === "cutting" && anchors.length === 0 && (
             <>
               <button disabled={cuts === 0} onClick={() => setStage("unfolding")}>
                 Unfold
