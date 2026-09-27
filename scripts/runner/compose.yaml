@@ -14,7 +14,7 @@ services:
     deploy:
       replicas: ${RUNNER_COUNT:-4}
     # Chromium keeps its shared memory in /dev/shm, and Docker's default 64 MB
-    # crashes a tab under the browser project's parallel files.
+    # crashes a tab rendering WebGL in software for the screenshots.
     shm_size: 2gb
     volumes:
       - toolcache:/opt/hostedtoolcache

@@ -3,9 +3,9 @@
 # Built and run by `scripts/runner/runner.sh`. Same setup as abvthecity/linklater.
 FROM ghcr.io/actions/actions-runner:2.337.0
 
-# The Playwright linklater pins, for the browser tests this app will grow.
-# Only its `install-deps` is used here, for the shared libraries Chromium
-# needs; the browser itself is downloaded by the job that uses it.
+# The Playwright the lockfile pins. Only its `install-deps` is used here, for
+# the shared libraries Chromium needs; the browser itself is still downloaded
+# by check.yml's own step, as it is on a hosted runner.
 ARG PLAYWRIGHT_VERSION=1.63.0
 
 USER root
