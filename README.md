@@ -9,7 +9,7 @@ pnpm install
 pnpm dev          # http://localhost:5173
 ```
 
-1. **Fold.** The square folds corner to corner into a triangle, in half, then in thirds like a cone: twelve layers in a 30° wedge.
+1. **Fold, four times.** Each press of *Fold* makes one fold: corner to corner into a triangle, in half, then each side across by a third like a cone. That leaves twelve layers in a 30° wedge.
 2. **Trim.** Slice straight across the top of the wedge along the dashed line, so the paper opens into a hexagon rather than a square.
 3. **Cut.** Draw a closed shape across the folded paper with the mouse or a finger. Wherever it overlaps the paper, it cuts through every layer. *Surprise me* adds a sample pattern; *Undo* takes the last cut back.
 4. **Unfold.** The layers open one fold at a time into the snowflake. Drag to turn it, or fold it back up and keep cutting.

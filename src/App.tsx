@@ -27,28 +27,40 @@ const FOLD_TIME = 0.9;
 const WEDGE_CENTRE = new THREE.Vector3(0, 0.68, 0);
 const VIEWS = {
   flat: { position: new THREE.Vector3(0, -1.6, 3.6), target: new THREE.Vector3(0, 0, 0) },
+  folded: { position: new THREE.Vector3(0, -0.5, 3.1), target: new THREE.Vector3(0, 0.35, 0) },
   cutting: { position: new THREE.Vector3(0, 0.68, 2.25), target: WEDGE_CENTRE },
   open: { position: new THREE.Vector3(0.4, -0.6, 3.4), target: new THREE.Vector3(0, 0, 0) },
 };
 
-function viewFor(stage: Stage) {
+function viewFor(stage: Stage, folds: number) {
   if (stage === "still") return STILL_FOLD! >= 3.5 ? VIEWS.cutting : VIEWS.open;
-  if (stage === "cutting" || stage === "folding" || stage === "trimming") return VIEWS.cutting;
+  if (stage === "cutting" || stage === "trimming") return VIEWS.cutting;
   if (stage === "open" || stage === "unfolding") return VIEWS.open;
+  // While folding, frame the paper as it shrinks: whole sheet, triangle, wedge.
+  if (folds >= 3) return VIEWS.cutting;
+  if (folds >= 1) return VIEWS.folded;
   return VIEWS.flat;
 }
 
 /** Eases the camera to each stage's view; hands control back to the user once it arrives. */
-function CameraRig({ stage, controls }: { stage: Stage; controls: React.RefObject<OrbitControlsImpl | null> }) {
+function CameraRig({
+  stage,
+  folds,
+  controls,
+}: {
+  stage: Stage;
+  folds: number;
+  controls: React.RefObject<OrbitControlsImpl | null>;
+}) {
   const { camera } = useThree();
   const moving = useRef(true);
   useEffect(() => {
     moving.current = true;
-  }, [stage]);
+  }, [stage, folds]);
   useFrame((_, dt) => {
     const c = controls.current;
     if (!moving.current || !c) return;
-    const view = viewFor(stage);
+    const view = viewFor(stage, folds);
     const k = stage === "still" ? 1 : 1 - Math.exp(-dt * 3);
     camera.position.lerp(view.position, k);
     c.target.lerp(view.target, k);
@@ -58,7 +70,7 @@ function CameraRig({ stage, controls }: { stage: Stage; controls: React.RefObjec
   return null;
 }
 
-/** Drives the fold amount toward 4 (folded) or 0 (open) and reports when it arrives. */
+/** Drives the fold amount toward its target (0 flat, 4 fully folded) and reports when it arrives. */
 function FoldDriver({ fold, target, onArrive }: { fold: React.RefObject<number>; target: number; onArrive: () => void }) {
   const arrived = useRef(true);
   useEffect(() => {
@@ -158,9 +170,25 @@ function Sway({ active, children }: { active: boolean; children: React.ReactNode
   return <group ref={group}>{children}</group>;
 }
 
+/** The four folds, one step each, in the order of the paper guide. */
+const FOLD_STEPS = [
+  {
+    title: "Fold corner to corner",
+    body: "Start with a square of paper. Bring the bottom right corner up to the top left one, making a triangle.",
+  },
+  { title: "Fold in half", body: "Fold the triangle in half, bringing its two sharp corners together." },
+  { title: "Fold one side across", body: "From the point at the bottom, fold the left side over by a third." },
+  {
+    title: "Fold the other side across",
+    body: "Fold the right side over on top, so the paper makes a narrow cone twelve layers thick.",
+  },
+];
+
+const STEP_COUNT = FOLD_STEPS.length + 3;
+
 const COPY: Record<Stage, { title: string; body: string }> = {
-  flat: { title: "A square of paper", body: "Fold it corner to corner, in half, then in thirds." },
-  folding: { title: "Folding…", body: "Corner to corner, in half, then in thirds: twelve layers." },
+  flat: FOLD_STEPS[0],
+  folding: { title: "Folding…", body: "" },
   trimming: {
     title: "Trim the top",
     body: "Slice straight across the top of the folded paper, along the dashed line. That is what opens into a hexagon instead of a square.",
@@ -178,10 +206,13 @@ export function App() {
   const mask = useMemo(() => new CutMask(), []);
   const [stage, setStage] = useState<Stage>("flat");
   const [cuts, setCuts] = useState(0);
+  /** How many folds the paper is heading for, 0 to 4. */
+  const [folds, setFolds] = useState(0);
   const fold = useRef(0);
   const controls = useRef<OrbitControlsImpl>(null);
 
-  const foldTarget = stage === "folding" || stage === "trimming" || stage === "cutting" ? 4 : stage === "unfolding" ? 0 : fold.current;
+  const foldTarget =
+    stage === "folding" || stage === "trimming" || stage === "cutting" ? folds : stage === "unfolding" ? 0 : fold.current;
 
   useEffect(() => {
     if (DEMO !== null && mask.count === 0) {
@@ -194,15 +225,31 @@ export function App() {
       setStage("still");
     } else if (DEMO !== null) {
       fold.current = 4;
+      setFolds(4);
       setStage("unfolding");
     }
   }, [mask]);
 
   const onArrive = () => {
-    setStage((s) => (s === "folding" ? (mask.isTrimmed ? "cutting" : "trimming") : s === "unfolding" ? "open" : s));
+    setStage((s) => {
+      if (s === "unfolding") return "open";
+      if (s !== "folding") return s;
+      if (folds < FOLD_STEPS.length) return "flat";
+      return mask.isTrimmed ? "cutting" : "trimming";
+    });
   };
 
-  const copy = COPY[stage];
+  const copy = stage === "flat" ? FOLD_STEPS[folds] : COPY[stage];
+  const step =
+    stage === "flat"
+      ? folds + 1
+      : stage === "trimming"
+        ? 5
+        : stage === "cutting"
+          ? 6
+          : stage === "open" || stage === "unfolding"
+            ? 7
+            : null;
   const busy = stage === "folding" || stage === "unfolding";
 
   return (
@@ -245,7 +292,7 @@ export function App() {
         <Snowfall />
 
         <FoldDriver fold={fold} target={foldTarget} onArrive={onArrive} />
-        <CameraRig stage={stage} controls={controls} />
+        <CameraRig stage={stage} folds={folds} controls={controls} />
         <OrbitControls
           ref={controls}
           enabled={stage === "flat" || stage === "open" || stage === "still"}
@@ -256,10 +303,24 @@ export function App() {
       </Canvas>
 
       <div className="panel">
+        {step && (
+          <div className="step">
+            Step {step} of {STEP_COUNT}
+          </div>
+        )}
         <h1>{copy.title}</h1>
         {copy.body && <p>{copy.body}</p>}
         <div className="actions">
-          {stage === "flat" && <button onClick={() => setStage("folding")}>Fold</button>}
+          {stage === "flat" && (
+            <button
+              onClick={() => {
+                setFolds(folds + 1);
+                setStage("folding");
+              }}
+            >
+              Fold
+            </button>
+          )}
           {stage === "trimming" && (
             <button
               onClick={() => {
@@ -298,13 +359,21 @@ export function App() {
           )}
           {stage === "open" && (
             <>
-              <button onClick={() => setStage("folding")}>Fold back up</button>
+              <button
+                onClick={() => {
+                  setFolds(FOLD_STEPS.length);
+                  setStage("folding");
+                }}
+              >
+                Fold back up
+              </button>
               <button
                 className="quiet"
                 onClick={() => {
                   mask.clear();
                   setCuts(0);
                   fold.current = 0;
+                  setFolds(0);
                   setStage("flat");
                 }}
               >

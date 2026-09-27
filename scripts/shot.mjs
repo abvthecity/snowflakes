@@ -60,7 +60,16 @@ try {
 
   // Click through the real flow: fold, trim, cut, unfold.
   const page = await open("?lite", { width: 900, height: 640 });
-  await page.getByRole("button", { name: "Fold" }).click();
+  // One press per fold; each waits for the last fold to finish.
+  for (let i = 1; i <= 4; i++) {
+    await page.getByRole("button", { name: "Fold", exact: true }).click({ timeout: 90_000 });
+    if (i === 2) {
+      await page.getByText("Step 3 of 7").waitFor({ timeout: 90_000 });
+      await frames(page, 3);
+      await page.screenshot({ path: new URL("7b-step-3.png", out).pathname });
+      console.log("shots/7b-step-3.png");
+    }
+  }
   await page.getByRole("button", { name: "Trim" }).waitFor({ timeout: 90_000 });
   await frames(page, 3);
   await page.screenshot({ path: new URL("8-trim-guide.png", out).pathname });
