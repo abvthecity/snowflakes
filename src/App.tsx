@@ -132,10 +132,9 @@ function FoldDriver({
   speed: React.RefObject<number>;
   onArrive: () => void;
 }) {
+  // Arriving is getting there after moving. (Noticing a new target in an
+  // effect instead can run a frame late, when a fast fold is already there.)
   const arrived = useRef(true);
-  useEffect(() => {
-    arrived.current = fold.current === target;
-  }, [target, fold]);
   useFrame((_, dt) => {
     const step = (Math.min(dt, 0.25) / FOLD_TIME) * speed.current;
     const f = fold.current;
@@ -146,6 +145,7 @@ function FoldDriver({
       }
       return;
     }
+    arrived.current = false;
     fold.current = f < target ? Math.min(target, f + step) : Math.max(target, f - step);
   });
   return null;

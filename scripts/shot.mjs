@@ -9,7 +9,7 @@
 // buttons drive the whole flow.
 import { chromium } from "playwright";
 import { preview } from "vite";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 
 const out = new URL("../shots/", import.meta.url);
 await mkdir(out, { recursive: true });
@@ -182,6 +182,7 @@ try {
   await page.getByRole("button", { name: "Save" }).click();
   const link = await page.getByRole("textbox", { name: "Link to this snowflake" }).inputValue({ timeout: 30_000 });
   if (!link.endsWith("?s=shot1")) errors.push(`save: link is ${link}`);
+  await writeFile(new URL("recording.json", out), JSON.stringify(saved));
   const kinds = new Set(saved?.events?.map((e) => e.k));
   for (const k of ["fold", "trim", "cut", "recut", "unfold"]) if (!kinds.has(k)) errors.push(`save: the recording has no ${k}`);
   if (!saved?.events?.some((e) => e.k === "cut" && e.tool === "pen" && e.pts.some((v, i) => i % 5 === 2 && v !== 0)))
