@@ -41,3 +41,14 @@ test("the trimmed edge is where the geometry puts it", () => {
   }
   assert.ok(Math.abs(edgeDistance(...polar(1, Math.PI / 2)) - 0.9) < 0.1);
 });
+
+test("crumbs a cut leaves behind go, and never outweigh the real pieces", () => {
+  // An inner-half cut that leaves one stray pixel beside it: the paper stays whole otherwise.
+  const cut = rows(7);
+  cut[7 * W + 2] = 0;
+  cut[6 * W + 2] = 1;
+  cut[8 * W + 2] = 1;
+  const left = cutPaper(strip(), cut, W, H, 1, H, edge);
+  assert.equal(left[7 * W + 2], 0);
+  assert.equal(show(left), "#######...");
+});

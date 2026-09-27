@@ -86,18 +86,19 @@ export function cutPaper(
   }
   if (sizes.length < 2) return left;
 
-  const centre = nearness.indexOf(Math.min(...nearness));
-  const dx = sx / removed - cx;
-  const dy = sy / removed - cy;
-  const inner = Math.hypot(dx, dy) < 0.5 * edge(dx, dy);
-  let keep = centre;
-  if (inner) {
-    // A hole in the middle: the centre goes, and the biggest of the rest stays.
-    let biggest = -1;
-    sizes.forEach((n, id) => {
-      if (id !== centre && (biggest < 0 || n > sizes[biggest])) biggest = id;
-    });
-    keep = biggest;
+  // Crumbs a cut leaves along its edge (a pixel or two, or a sliver where it
+  // grazes a fold) always go, and never count as the piece to keep.
+  const total = sizes.reduce((a, b) => a + b, 0);
+  const pieces = sizes.map((_, id) => id).filter((id) => sizes[id] >= total * 0.01);
+  const biggest = (ids: number[]) => ids.reduce((a, b) => (sizes[b] > sizes[a] ? b : a));
+  let keep = biggest(pieces.length ? pieces : sizes.map((_, id) => id));
+  if (pieces.length > 1) {
+    const centre = pieces.reduce((a, b) => (nearness[b] < nearness[a] ? b : a));
+    const dx = sx / removed - cx;
+    const dy = sy / removed - cy;
+    // Cut in the inner half, it is a hole in the middle: the centre goes, and the biggest of the rest stays.
+    const inner = Math.hypot(dx, dy) < 0.5 * edge(dx, dy);
+    keep = inner ? biggest(pieces.filter((id) => id !== centre)) : centre;
   }
   for (let i = 0; i < w * h; i++) left[i] = label[i] === keep ? 1 : 0;
   return left;
