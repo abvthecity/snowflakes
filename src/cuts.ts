@@ -4,7 +4,7 @@
 // the folded layers at once, and appears 16 times when the paper opens.
 import * as THREE from "three";
 import { SECTORS, invert, type Vec2 } from "./folds";
-import { drawScraps, scraps } from "./pieces";
+import { Pieces, drawScraps } from "./pieces";
 
 export const MASK_SIZE = 2048;
 /** Resolution of the raster that finds severed pieces: about the mask's. */
@@ -23,6 +23,9 @@ export class CutMask {
   private cuts: Vec2[][] = [];
   private trimmed: readonly Vec2[] | null = null;
   private scrap: HTMLCanvasElement | null = null;
+  private pieces = new Pieces(SCRAP_PER_UNIT);
+  /** Goes up on every change, for views that follow the cuts. */
+  version = 0;
 
   constructor() {
     this.canvas = document.createElement("canvas");
@@ -67,7 +70,9 @@ export class CutMask {
     if (outline.length < 3) return;
     this.cuts.push(outline);
     this.paint(outline);
+    this.pieces.cut(outline);
     this.toss();
+    this.version++;
     this.texture.needsUpdate = true;
   }
 
@@ -88,14 +93,19 @@ export class CutMask {
     ctx.fillStyle = "#fff";
     ctx.fillRect(0, 0, MASK_SIZE, MASK_SIZE);
     if (this.trimmed) this.paint(this.trimmed);
-    for (const c of this.cuts) this.paint(c);
+    this.pieces.reset();
+    for (const c of this.cuts) {
+      this.paint(c);
+      this.pieces.cut(c);
+    }
     this.toss();
+    this.version++;
     this.texture.needsUpdate = true;
   }
 
   /** Cut away every piece that no longer hangs on to the snowflake. */
   private toss() {
-    this.scrap = this.cuts.length ? scraps(this.cuts, SCRAP_PER_UNIT) : null;
+    this.scrap = this.pieces.scraps();
     const scrap = this.scrap;
     if (scrap) this.paint((ctx) => drawScraps(ctx, scrap, SCRAP_PER_UNIT));
   }

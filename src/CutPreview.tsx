@@ -7,7 +7,7 @@ import { useEffect, useMemo } from "react";
 import * as THREE from "three";
 import type { CutMask } from "./cuts";
 import type { Vec2 } from "./folds";
-import { WEDGE_AREA as AREA, WEDGE_PAPER as PAPER, drawScraps, scraps } from "./pieces";
+import { Pieces, WEDGE_AREA as AREA, WEDGE_PAPER as PAPER, drawScraps } from "./pieces";
 
 const PER_UNIT = 900;
 /** Finding severed pieces runs on every move, so on a coarser raster. */
@@ -32,6 +32,14 @@ export function CutPreview({ shape, mask, z }: { shape: readonly Vec2[]; mask: C
   }, []);
   useEffect(() => () => texture.dispose(), [texture]);
 
+  // The paper as it is, on the coarse raster, following the mask's cuts.
+  const pieces = useMemo(() => new Pieces(SCRAP_PER_UNIT), []);
+  const version = mask.version;
+  useMemo(() => {
+    pieces.reset();
+    for (const c of mask.outlines) pieces.cut(c);
+  }, [pieces, mask, version]);
+
   const visible = shape.length > 2;
   useEffect(() => {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -46,7 +54,7 @@ export function CutPreview({ shape, mask, z }: { shape: readonly Vec2[]; mask: C
     ctx.fillStyle = "#000";
     trace(ctx, shape);
     ctx.fill();
-    const severed = scraps([...mask.outlines, shape], SCRAP_PER_UNIT);
+    const severed = pieces.scrapsAfter(shape);
     if (severed) drawScraps(ctx, severed, SCRAP_PER_UNIT);
     ctx.globalCompositeOperation = "source-in";
     ctx.fillStyle = "rgba(24, 33, 70, 0.62)";
@@ -61,7 +69,7 @@ export function CutPreview({ shape, mask, z }: { shape: readonly Vec2[]; mask: C
     if (gone) drawScraps(ctx, gone.canvas, gone.perUnit);
     ctx.restore();
     texture.needsUpdate = true;
-  }, [ctx, texture, shape, mask, visible]);
+  }, [ctx, texture, shape, mask, pieces, visible]);
 
   return (
     <mesh visible={visible} position={[(AREA[0] + AREA[2]) / 2, (AREA[1] + AREA[3]) / 2, z]}>
