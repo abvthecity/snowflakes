@@ -1,13 +1,11 @@
 # The self-hosted CI runner: GitHub's own runner image (Ubuntu 24.04), plus
 # what `ubuntu-latest` ships that check.yml leans on and this image does not.
-# Copied from abvthecity/linklater's scripts/runner, so both repos run CI the
-# same way.
-# Built and run by `scripts/runner/runner.sh`.
+# Built and run by `scripts/runner/runner.sh`. Same setup as abvthecity/linklater.
 FROM ghcr.io/actions/actions-runner:2.337.0
 
 # The Playwright the lockfile pins. Only its `install-deps` is used here, for
 # the shared libraries Chromium needs; the browser itself is still downloaded
-# by check.yml's own step, into the job's cache, as it is on a hosted runner.
+# by check.yml's own step, as it is on a hosted runner.
 ARG PLAYWRIGHT_VERSION=1.63.0
 
 USER root

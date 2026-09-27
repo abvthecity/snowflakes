@@ -2,7 +2,7 @@
 #
 # Run check.yml's jobs on this machine, in Linux containers:
 #
-#   scripts/runner/runner.sh up       # build the image, start RUNNER_COUNT runners (2)
+#   scripts/runner/runner.sh up       # build the image, start RUNNER_COUNT runners (4)
 #   scripts/runner/runner.sh down     # stop and remove them
 #   scripts/runner/runner.sh status   # the containers, and what GitHub sees
 #   scripts/runner/runner.sh logs     # follow the runners' output

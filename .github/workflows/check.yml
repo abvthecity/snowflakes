@@ -1,8 +1,9 @@
 name: Checks
 # Every job runs on `vars.CI_RUNNER` when it is set (`snowflakes`, the Linux
-# containers scripts/runner/ starts on the owner's machine, the same setup as
-# abvthecity/linklater) and on `ubuntu-latest` when it is not.
-# `scripts/runner/runner.sh hosted` and `local` flip it without a commit.
+# containers scripts/runner/ starts on the owner's machine) and on
+# `ubuntu-latest` when it is not. `scripts/runner/runner.sh hosted` and `local`
+# flip it, so CI moves back to GitHub without a commit when that machine is off.
+# Same setup as abvthecity/linklater.
 on:
   push:
     branches: [main]
@@ -17,6 +18,10 @@ jobs:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate JSON config
+        run: jq empty .mcp.json
+      - name: Lint runner scripts
+        run: shellcheck scripts/runner/*.sh
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
