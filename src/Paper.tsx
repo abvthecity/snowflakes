@@ -4,7 +4,7 @@
 import { useFrame } from "@react-three/fiber";
 import { useMemo, useRef, type RefObject } from "react";
 import * as THREE from "three";
-import { FOLD_ANGLES, FOLD_LIFT, SECTORS } from "./folds";
+import { COVER, FOLD_ANGLES, FOLD_LIFT, SECTORS } from "./folds";
 import { webgpu } from "./gpu";
 import { createPaperMaterial } from "./paperMaterial";
 
@@ -16,6 +16,8 @@ const THICKNESS = 0.0035;
  * distance from the centre, so each sector catches the light at its own angle.
  */
 const CREASE_RISE = 0.045;
+/** Below this cosine between a layer and the line of sight, it counts as edge-on. */
+const EDGE_ON = 0.4;
 
 const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 const clamp01 = (t: number) => Math.min(1, Math.max(0, t));
@@ -35,19 +37,59 @@ function sectorGeometry(triangle: readonly (readonly [number, number])[]) {
 export function Paper({ fold, mask, creased }: { fold: RefObject<number>; mask: THREE.Texture; creased: boolean }) {
   const material = useMemo(() => webgpu()?.createPaperNodeMaterial(mask) ?? createPaperMaterial(mask), [mask]);
   const geometries = useMemo(() => SECTORS.map((s) => sectorGeometry(s.triangle)), []);
-  const meshes = useRef<(THREE.Mesh | null)[]>([]);
+  // Folded, the paper is up to twelve layers deep, and the full paper shader
+  // on every one of them is what bogs a phone down. Layers buried under
+  // the rest of the stack draw in plain paper instead: only a sliver of their
+  // edge ever shows, and they draw after the top layers, so the GPU can skip
+  // most of their pixels altogether.
+  const buried = useMemo(
+    () =>
+      new THREE.MeshLambertMaterial({
+        color: new THREE.Color("#fbfaf5"),
+        alphaMap: mask,
+        alphaTest: 0.5,
+        side: THREE.DoubleSide,
+      }),
+    [mask],
+  );
+  // Each sector is a pair of meshes, one in each material, and shows one of
+  // them: swapping a mesh's material mid-flight upsets three's WebGPU renderer.
+  const sectors = useRef<({ turn: THREE.Group; paper: THREE.Mesh; plain: THREE.Mesh } | null)[]>([]);
+  const group = useRef<THREE.Group>(null);
 
-  const scratch = useMemo(() => ({ m: new THREE.Matrix4(), r: new THREE.Matrix4() }), []);
+  const scratch = useMemo(
+    () => ({
+      m: new THREE.Matrix4(),
+      r: new THREE.Matrix4(),
+      normal: new THREE.Vector3(),
+      eye: new THREE.Vector3(),
+      facing: new THREE.Vector3(),
+    }),
+    [],
+  );
   const crease = useRef(0);
 
-  useFrame((_, dt) => {
+  useFrame(({ camera }, dt) => {
     const f = fold.current;
+    const stage = Math.min(FOLD_ANGLES.length, Math.floor(f));
+    const cover = COVER[stage];
+    // Layers stack up along the sheet's own +z. From which side of the stack
+    // does the camera look (as of the last frame)?
+    const { normal, eye } = scratch;
+    const sheet = group.current;
+    let fromFront = true;
+    if (sheet) {
+      normal.setFromMatrixColumn(sheet.matrixWorld, 2);
+      eye.setFromMatrixPosition(sheet.matrixWorld).sub(camera.position).normalize();
+      fromFront = normal.dot(eye) < 0;
+    }
     crease.current = THREE.MathUtils.damp(crease.current, creased ? 1 : 0, 3, dt);
     // The WebGPU paper draws the crease lines themselves, as the sheet opens.
     if ("crease" in material) material.crease.value = crease.current * (1 - clamp01(f));
     for (const s of SECTORS) {
-      const mesh = meshes.current[s.index];
-      if (!mesh) continue;
+      const sector = sectors.current[s.index];
+      if (!sector) continue;
+      const { turn, paper, plain } = sector;
       const { m, r } = scratch;
       m.identity();
       let layer = 0;
@@ -61,33 +103,47 @@ export function Paper({ fold, mask, creased }: { fold: RefObject<number>; mask: 
       // Ridge the creases while the paper is (nearly) open. Neighbouring
       // sectors share the crease between them, so the sheet stays whole.
       const rise = CREASE_RISE * crease.current * (1 - clamp01(f));
-      const pos = mesh.geometry.attributes.position as THREE.BufferAttribute;
+      const pos = paper.geometry.attributes.position as THREE.BufferAttribute;
       const [, a, b] = s.triangle;
       const sign = s.index % 2 ? 1 : -1;
       pos.setZ(1, sign * rise * Math.hypot(a[0], a[1]));
       pos.setZ(2, -sign * rise * Math.hypot(b[0], b[1]));
       pos.needsUpdate = true;
-      mesh.geometry.computeVertexNormals();
-      mesh.matrix.copy(m);
-      mesh.matrixWorldNeedsUpdate = true;
+      paper.geometry.computeVertexNormals();
+      turn.matrix.copy(m);
+      turn.matrixWorldNeedsUpdate = true;
+
+      // Whether the side facing the camera lies under another layer. A flap
+      // on its way over shows both sides, so it is buried only if covered on
+      // both. Seen nearly edge-on, every layer's face shows as a strip, but
+      // then the layers cover so few pixels that they may as well be paper.
+      const { above, below } = cover[s.index];
+      const turning = f > stage && s.moves[stage];
+      const covered = turning ? above && below : fromFront ? above : below;
+      const facing = Math.abs(scratch.facing.setFromMatrixColumn(turn.matrixWorld, 2).normalize().dot(eye));
+      const hidden = covered && facing > EDGE_ON;
+      paper.visible = !hidden;
+      plain.visible = hidden;
     }
   });
 
   return (
-    <group>
+    <group ref={group}>
       {SECTORS.map((s) => (
-        <mesh
+        <group
           key={s.index}
-          ref={(el) => {
-            meshes.current[s.index] = el;
+          ref={(turn) => {
+            const [paper, plain] = (turn?.children ?? []) as THREE.Mesh[];
+            sectors.current[s.index] = turn && paper && plain ? { turn, paper, plain } : null;
           }}
-          geometry={geometries[s.index]}
-          material={material}
           matrixAutoUpdate={false}
-          castShadow
-          receiveShadow
-        />
+        >
+          <mesh geometry={geometries[s.index]} material={material} castShadow receiveShadow />
+          <mesh geometry={geometries[s.index]} material={buried} visible={false} castShadow receiveShadow />
+        </group>
       ))}
+      {/* Too small to see, but it gets the plain paper compiled with the rest of the scene, before the first fold needs it. */}
+      <mesh geometry={geometries[0]} material={buried} scale={1e-6} />
     </group>
   );
 }
