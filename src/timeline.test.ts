@@ -51,3 +51,10 @@ test("the paper is kept, and defaults to today's", () => {
   assert.equal(parseRecording({ v: 1, paper: { id: "../x" }, events }), "bad paper id");
   assert.equal(parseRecording({ v: 1, paper: { id: "a", params: { x: {} } }, events }), "bad paper params");
 });
+
+test("the fold method is kept, and defaults to diagonal", () => {
+  const events = [{ t: 0, k: "cut", tool: "surprise", pts: loop.flat() }];
+  assert.equal((parseRecording({ v: 1, events }) as { fold: string }).fold, "diagonal");
+  assert.equal((parseRecording({ v: 1, fold: "square-cone", events }) as { fold: string }).fold, "square-cone");
+  assert.equal(parseRecording({ v: 1, fold: 3, events }), "bad fold method");
+});

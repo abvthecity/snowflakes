@@ -30,8 +30,16 @@ export interface PaperChoice {
 /** Today's paper, and what recordings without a `paper` were cut from. */
 export const DEFAULT_PAPER: PaperChoice = { id: "classic" };
 
+/**
+ * How the paper was folded: "diagonal" is today's corner-to-corner, half, then
+ * thirds; other methods (such as a square first, then a cone) get their own ids.
+ * Replays fold the same way, so every fold event means a step of this method.
+ */
+export const DEFAULT_FOLD_METHOD = "diagonal";
+
 export interface Recording {
   v: 1;
+  fold: string;
   paper: PaperChoice;
   events: TimelineEvent[];
 }
@@ -132,6 +140,8 @@ export function parseRecording(json: unknown): Recording | string {
   const { v, events } = json as Partial<Recording>;
   const paper = parsePaper((json as { paper?: unknown }).paper);
   if (typeof paper === "string") return paper;
+  const fold = (json as { fold?: unknown }).fold ?? DEFAULT_FOLD_METHOD;
+  if (typeof fold !== "string" || !/^[a-z0-9-]{1,32}$/.test(fold)) return "bad fold method";
   if (v !== 1) return "unknown version";
   if (!Array.isArray(events) || events.length === 0) return "no events";
   if (events.length > LIMITS.events) return "too many events";
@@ -153,7 +163,7 @@ export function parseRecording(json: unknown): Recording | string {
     if (points > LIMITS.points) return "too many points";
   }
   if (!events.some((e) => e.k === "cut")) return "nothing was cut";
-  return { v: 1, paper, events: events as TimelineEvent[] };
+  return { v: 1, fold, paper, events: events as TimelineEvent[] };
 }
 
 /** Collects events as they happen. */
@@ -162,10 +172,12 @@ export class Recorder {
   private offset = 0;
   events: TimelineEvent[] = [];
   paper: PaperChoice = DEFAULT_PAPER;
+  fold = DEFAULT_FOLD_METHOD;
 
-  /** Start a new sheet of paper. */
-  reset(paper: PaperChoice = DEFAULT_PAPER) {
+  /** Start a new sheet of paper, to be folded by `fold`. */
+  reset(paper: PaperChoice = DEFAULT_PAPER, fold = DEFAULT_FOLD_METHOD) {
     this.paper = paper;
+    this.fold = fold;
     this.events = [];
     this.offset = 0;
     this.start = performance.now();
@@ -174,6 +186,7 @@ export class Recorder {
   /** Carry on from a saved recording, as though its story had just happened. */
   resume(r: Recording) {
     this.paper = r.paper;
+    this.fold = r.fold;
     this.events = [...r.events];
     this.offset = (r.events[r.events.length - 1]?.t ?? 0) + 1000;
     this.start = performance.now();
@@ -188,6 +201,6 @@ export class Recorder {
   }
 
   get recording(): Recording {
-    return { v: 1, paper: this.paper, events: this.events };
+    return { v: 1, fold: this.fold, paper: this.paper, events: this.events };
   }
 }

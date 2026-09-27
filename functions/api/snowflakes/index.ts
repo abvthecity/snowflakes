@@ -1,4 +1,4 @@
-// POST /api/snowflakes  { v: 1, paper: { id, params? }, events: [...] }  →  201 { id }
+// POST /api/snowflakes  { v: 1, fold, paper: { id, params? }, events: [...] }  →  201 { id }
 // Stores the recording of how a snowflake was made; the id opens it at /?s=<id>.
 import { LIMITS, parseRecording } from "../../../src/timeline.ts";
 import { json, type Handler } from "../../../server/d1.ts";
@@ -26,8 +26,8 @@ export const onRequestPost: Handler = async ({ request, env }) => {
   const events = recording.events;
   const cuts = events.filter((e) => e.k === "cut").length;
   const id = newId();
-  await env.DB.prepare("INSERT INTO snowflakes (id, created_at, duration_ms, cuts, paper, recording) VALUES (?, ?, ?, ?, ?, ?)")
-    .bind(id, Date.now(), events[events.length - 1].t, cuts, recording.paper.id, JSON.stringify(recording))
+  await env.DB.prepare("INSERT INTO snowflakes (id, created_at, duration_ms, cuts, paper, fold_method, recording) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .bind(id, Date.now(), events[events.length - 1].t, cuts, recording.paper.id, recording.fold, JSON.stringify(recording))
     .run();
   return json({ id }, 201);
 };
