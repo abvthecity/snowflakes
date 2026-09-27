@@ -95,6 +95,16 @@ const stills = [
   ["5-unfolding", "?demo=11&fold=1.4"],
   ["6-snowflake", "?demo=11&fold=0"],
   ["7-another", "?demo=5&fold=0"],
+  // The other way to fold: in half, into 60° thirds, then in half into a cone.
+  ["h1-half-flat", "?method=half&fold=0"],
+  ["h2-half-first-fold", "?method=half&fold=0.5"],
+  ["h3-half-folded-once", "?method=half&fold=1"],
+  ["h4-half-thirds", "?method=half&fold=2.5"],
+  ["h5-half-point", "?method=half&fold=3"],
+  ["h6-half-cone", "?method=half&fold=3.5"],
+  ["h7-half-folded", "?method=half&fold=4"],
+  ["h8-half-cut", "?method=half&demo=11&fold=4"],
+  ["h9-half-snowflake", "?method=half&demo=11&fold=0"],
   // Coloured papers, lit from the front and glowing where light comes through.
   ["7d-mint", "?demo=11&fold=0&paper=mint"],
   ["7e-blush-folded", "?demo=11&fold=4&paper=blush"],
@@ -224,6 +234,8 @@ try {
   const phoneCheck = steady(phone, "phone");
   await phone.locator("html[data-ready]").waitFor({ timeout: 120_000 });
   await phone.getByRole("radio", { name: "Sky" }).tap();
+  // Fold this one the other way, in half first.
+  await phone.getByRole("radio", { name: "In half first" }).tap();
   await phoneShot("11-phone-start");
   for (let i = 1; i <= 4; i++) {
     await phoneCheck(`fold ${i}`);

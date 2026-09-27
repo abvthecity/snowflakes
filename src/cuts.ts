@@ -1,9 +1,9 @@
 // The paper's cut-out mask: a canvas over the flat square, white where there
-// is paper and black where scissors took it away. Every one of the 16 sectors
+// is paper and black where scissors took it away. Every one of the 12 sectors
 // samples it at its own place in the flat square, so a hole shows through all
-// the folded layers at once, and appears 16 times when the paper opens.
+// the folded layers at once, and appears 12 times when the paper opens.
 import * as THREE from "three";
-import { SECTORS, invert, type Vec2 } from "./folds";
+import { DEFAULT_METHOD, invert, type FoldMethod, type Vec2 } from "./folds";
 import { Pieces, drawScraps } from "./pieces";
 
 export const MASK_SIZE = 2048;
@@ -22,6 +22,7 @@ export class CutMask {
   private readonly ctx: CanvasRenderingContext2D;
   private cuts: Vec2[][] = [];
   private trimmed: readonly Vec2[] | null = null;
+  private method: FoldMethod = DEFAULT_METHOD;
   private scrap: HTMLCanvasElement | null = null;
   private pieces = new Pieces(SCRAP_PER_UNIT);
   /** Goes up on every change, for views that follow the cuts. */
@@ -76,6 +77,13 @@ export class CutMask {
     this.texture.needsUpdate = true;
   }
 
+  /** Fold the paper another way. The cuts are drawn on the folded paper, so they follow it. */
+  setMethod(method: FoldMethod) {
+    if (method === this.method) return;
+    this.method = method;
+    this.redraw();
+  }
+
   undo() {
     this.cuts.pop();
     this.redraw();
@@ -118,12 +126,12 @@ export class CutMask {
   private paint(shape: readonly Vec2[] | ((ctx: CanvasRenderingContext2D) => void)) {
     const { ctx } = this;
     ctx.fillStyle = "#000";
-    for (const s of SECTORS) {
+    for (const s of this.method.sectors) {
       const [a, b, c, d] = invert(s.folded);
       ctx.save();
       toPixels(ctx);
       ctx.beginPath();
-      for (const [x, y] of s.triangle) ctx.lineTo(x, y);
+      for (const [x, y] of s.outline) ctx.lineTo(x, y);
       ctx.closePath();
       ctx.clip();
       // Canvas transform(a, b, c, d, e, f) maps (x, y) to (ax + cy, bx + dy).
