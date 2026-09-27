@@ -12,6 +12,8 @@ export interface Anchor {
   point: Vec2;
   /** Outgoing handle, relative to the point. The incoming handle is its mirror. */
   handle: Vec2;
+  /** When it was placed (`performance.now()`), for the recording. */
+  at?: number;
 }
 
 const dist = (a: Vec2, b: Vec2) => Math.hypot(a[0] - b[0], a[1] - b[1]);
