@@ -72,11 +72,11 @@ function CameraRig({
   stage: Stage;
   folds: number;
   controls: React.RefObject<OrbitControlsImpl | null>;
-  panel: React.RefObject<HTMLDivElement | null>;
+  panel: React.RefObject<HTMLElement | null>;
 }) {
   const { camera, size } = useThree();
   const moving = useRef(true);
-  const inset = useRef(0);
+  const inset = useRef("");
   const goal = useMemo(() => new THREE.Vector3(), []);
   const offset = useMemo(() => new THREE.Vector3(), []);
   useEffect(() => {
@@ -87,22 +87,26 @@ function CameraRig({
     const c = controls.current;
     const cam = camera as THREE.PerspectiveCamera;
 
-    // On a phone the panel spans the bottom of the screen: aim the view at
-    // the space above it, by shifting the frustum up by half its height.
+    // On a phone the panel spans the bottom of the screen; on a wider screen
+    // it floats on the right. Aim the view at the space the panel leaves
+    // free, by shifting the frustum by half of what the panel covers.
     const rect = panel.current?.getBoundingClientRect();
-    const covered = rect && rect.width > size.width * 0.8 ? size.height - rect.top + 8 : 0;
-    if (covered !== inset.current) {
-      inset.current = covered;
-      if (covered) cam.setViewOffset(size.width, size.height, 0, covered / 2, size.width, size.height);
+    const wide = rect && rect.width > size.width * 0.8;
+    const below = rect && wide ? size.height - rect.top + 8 : 0;
+    const right = rect && !wide && rect.left > size.width / 2 ? size.width - rect.left + 8 : 0;
+    const key = `${right},${below}`;
+    if (key !== inset.current) {
+      inset.current = key;
+      if (below || right) cam.setViewOffset(size.width, size.height, right / 2, below / 2, size.width, size.height);
       else cam.clearViewOffset();
       moving.current = true;
     }
 
     if (!moving.current || !c) return;
     const view = viewFor(stage, folds);
-    // Back off until the content fits across a narrow screen and above the panel.
-    const across = view.fit[0] / (Math.tan(HALF_FOV) * cam.aspect);
-    const up = view.fit[1] / (Math.tan(HALF_FOV) * Math.max(0.3, 1 - covered / size.height));
+    // Back off until the content fits in the space the panel leaves free.
+    const across = view.fit[0] / (Math.tan(HALF_FOV) * cam.aspect * Math.max(0.3, 1 - right / size.width));
+    const up = view.fit[1] / (Math.tan(HALF_FOV) * Math.max(0.3, 1 - below / size.height));
     offset.copy(view.position).sub(view.target);
     offset.setLength(Math.max(offset.length(), across, up));
     goal.copy(view.target).add(offset);
@@ -322,13 +326,13 @@ const CUT_HINTS = {
 
 const COPY: Record<Stage, { title: string; body: string }> = {
   flat: FOLD_STEPS[0],
-  folding: { title: "Folding…", body: "" },
+  folding: { title: "", body: "" },
   trimming: {
     title: "Trim the top",
     body: "Slice straight across the top of the folded paper, along the dashed line. That is what opens into a hexagon instead of a square.",
   },
   cutting: { title: "Cut", body: "" },
-  unfolding: { title: "Unfolding…", body: "" },
+  unfolding: { title: "", body: "" },
   still: { title: "Paper snowflake", body: "" },
   open: { title: "Your snowflake", body: "Drag to turn it. Fold it back up to keep cutting." },
 };
@@ -343,7 +347,7 @@ export function App() {
   const [colour, setColour] = useState(START_COLOUR);
   const fold = useRef(0);
   const controls = useRef<OrbitControlsImpl>(null);
-  const panel = useRef<HTMLDivElement>(null);
+  const panel = useRef<HTMLFieldSetElement>(null);
   const held = useRef(false);
 
   const foldTarget =
@@ -374,18 +378,25 @@ export function App() {
     });
   };
 
-  const copy = stage === "flat" ? FOLD_STEPS[folds] : COPY[stage];
+  // While the paper folds or unfolds, the panel keeps showing the step that
+  // started it, with its buttons disabled, rather than swapping to a
+  // placeholder and back: the panel, and the view framed above it, hold still.
+  const busy = stage === "folding" || stage === "unfolding";
+  const settled = useRef({ stage, folds });
+  if (!busy) settled.current = { stage, folds };
+  const shown = busy ? settled.current : { stage, folds };
+
+  const copy = shown.stage === "flat" ? FOLD_STEPS[shown.folds] : COPY[shown.stage];
   const step =
-    stage === "flat"
-      ? folds + 1
-      : stage === "trimming"
+    shown.stage === "flat"
+      ? shown.folds + 1
+      : shown.stage === "trimming"
         ? 5
-        : stage === "cutting"
+        : shown.stage === "cutting"
           ? 6
-          : stage === "open" || stage === "unfolding"
+          : shown.stage === "open"
             ? 7
             : null;
-  const busy = stage === "folding" || stage === "unfolding";
   /** A shape is being drawn and has not been cut yet. */
   const open = !path.closed && path.anchors.length > 0;
 
@@ -465,39 +476,37 @@ export function App() {
         />
       </Canvas>
 
-      <div className="panel" ref={panel}>
-        {step && (
-          <div className="step">
-            Step {step} of {STEP_COUNT}
-          </div>
-        )}
+      <fieldset className="panel" ref={panel} disabled={busy} aria-busy={busy}>
+        <div className="step">{step ? `Step ${step} of ${STEP_COUNT}` : "\u00a0"}</div>
         <h1>{copy.title}</h1>
-        {copy.body && <p>{copy.body}</p>}
-        {stage === "flat" && folds === 0 && (
-          <div className="papers">
-            <span className="papers-label">Paper</span>
-            <div className="swatches" role="radiogroup" aria-label="Paper colour">
-              {PAPER_COLOURS.map((c) => (
-                <button
-                  key={c.id}
-                  role="radio"
-                  aria-checked={colour.id === c.id}
-                  aria-label={c.name}
-                  title={c.name}
-                  className={colour.id === c.id ? "swatch on" : "swatch"}
-                  style={{ "--swatch": c.hex } as React.CSSProperties}
-                  onClick={() => setColour(c)}
-                />
-              ))}
+        <div className="body">
+          {copy.body && <p>{copy.body}</p>}
+          {shown.stage === "flat" && shown.folds === 0 && (
+            <div className="papers">
+              <span className="papers-label">Paper</span>
+              <div className="swatches" role="radiogroup" aria-label="Paper colour">
+                {PAPER_COLOURS.map((c) => (
+                  <button
+                    key={c.id}
+                    role="radio"
+                    aria-checked={colour.id === c.id}
+                    aria-label={c.name}
+                    title={c.name}
+                    className={colour.id === c.id ? "swatch on" : "swatch"}
+                    style={{ "--swatch": c.hex } as React.CSSProperties}
+                    onClick={() => setColour(c)}
+                  />
+                ))}
+              </div>
+              <span className="papers-name">{colour.name}</span>
             </div>
-            <span className="papers-name">{colour.name}</span>
-          </div>
-        )}
-        {stage === "cutting" && (
-          <p>{CUT_HINTS[path.closed ? "closed" : path.anchors.length ? "open" : "start"]}</p>
-        )}
+          )}
+          {shown.stage === "cutting" && (
+            <p>{CUT_HINTS[path.closed ? "closed" : path.anchors.length ? "open" : "start"]}</p>
+          )}
+        </div>
         <div className="actions">
-          {stage === "flat" && (
+          {shown.stage === "flat" && (
             <button
               onClick={() => {
                 setFolds(folds + 1);
@@ -507,7 +516,7 @@ export function App() {
               Fold
             </button>
           )}
-          {stage === "trimming" && (
+          {shown.stage === "trimming" && (
             <button
               onClick={() => {
                 mask.trim(TRIM_CUT);
@@ -517,7 +526,7 @@ export function App() {
               Trim
             </button>
           )}
-          {stage === "cutting" && open && (
+          {shown.stage === "cutting" && open && (
             <>
               <button
                 disabled={path.anchors.length < 3}
@@ -534,7 +543,7 @@ export function App() {
               </button>
             </>
           )}
-          {stage === "cutting" && !open && (
+          {shown.stage === "cutting" && !open && (
             <>
               <button
                 disabled={cuts === 0}
@@ -568,7 +577,7 @@ export function App() {
               </button>
             </>
           )}
-          {stage === "open" && (
+          {shown.stage === "open" && (
             <>
               <button
                 onClick={() => {
@@ -592,9 +601,8 @@ export function App() {
               </button>
             </>
           )}
-          {busy && <span className="hint">…</span>}
         </div>
-      </div>
+      </fieldset>
     </div>
   );
 }
