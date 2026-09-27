@@ -74,6 +74,16 @@ const stills = [
   ["5-unfolding", "?demo=11&fold=1.4"],
   ["6-snowflake", "?demo=11&fold=0"],
   ["7-another", "?demo=5&fold=0"],
+  // The other way to fold: in half, into 60° thirds, then in half into a cone.
+  ["h1-half-flat", "?method=half&fold=0"],
+  ["h2-half-first-fold", "?method=half&fold=0.5"],
+  ["h3-half-folded-once", "?method=half&fold=1"],
+  ["h4-half-thirds", "?method=half&fold=2.5"],
+  ["h5-half-point", "?method=half&fold=3"],
+  ["h6-half-cone", "?method=half&fold=3.5"],
+  ["h7-half-folded", "?method=half&fold=4"],
+  ["h8-half-cut", "?method=half&demo=11&fold=4"],
+  ["h9-half-snowflake", "?method=half&demo=11&fold=0"],
   // The WebGL fallback, for browsers without WebGPU.
   ["7c-webgl", "?demo=11&fold=0&webgl"],
 ];
@@ -154,6 +164,8 @@ try {
     await phone.screenshot({ path: new URL(`${name}.png`, out).pathname });
     console.log(`shots/${name}.png`);
   };
+  // Fold this one the other way, in half first.
+  await phone.getByRole("radio", { name: "In half first" }).tap();
   await phoneShot("11-phone-start");
   for (let i = 0; i < 4; i++) await phone.getByRole("button", { name: "Fold", exact: true }).tap({ timeout: 90_000 });
   await phone.getByRole("button", { name: "Trim" }).tap({ timeout: 90_000 });

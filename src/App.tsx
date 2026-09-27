@@ -5,7 +5,7 @@ import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { CutMask } from "./cuts";
 import { CuttingBoard, type CutTool } from "./CuttingBoard";
-import { TRIM_CUT, TRIM_LINE } from "./folds";
+import { FOLD_METHODS, TRIM_CUT, TRIM_LINE, foldMethod, type FoldMethod } from "./folds";
 import { outline, type Anchor } from "./penPath";
 import { Paper } from "./Paper";
 import { Snowfall } from "./Snowfall";
@@ -18,7 +18,9 @@ type Stage = "flat" | "folding" | "trimming" | "cutting" | "unfolding" | "open" 
 // The URL can set the scene up directly, for screenshots and for sharing:
 //   ?demo=<seed>   cut a sample pattern (the seed picks which) and unfold it
 //   &fold=<0–4>    hold the paper at that point of folding instead
+//   ?method=<id>   fold it this way (see FOLD_METHODS): diagonal or half
 const PARAMS = new URLSearchParams(location.search);
+const START_METHOD = foldMethod(PARAMS.get("method"));
 const DEMO = PARAMS.get("demo");
 //   &lite          skip shadows and antialiasing (software renderers, slow GPUs)
 const LITE = PARAMS.has("lite");
@@ -49,12 +51,12 @@ const VIEWS: Record<"flat" | "folded" | "cutting" | "open", View> = {
 /** Half the camera's vertical field of view, in radians. */
 const HALF_FOV = (40 / 2) * (Math.PI / 180);
 
-function viewFor(stage: Stage, folds: number) {
+function viewFor(stage: Stage, folds: number, method: FoldMethod) {
   if (stage === "still") return STILL_FOLD! >= 3.5 ? VIEWS.cutting : VIEWS.open;
   if (stage === "cutting" || stage === "trimming") return VIEWS.cutting;
   if (stage === "open" || stage === "unfolding") return VIEWS.open;
-  // While folding, frame the paper as it shrinks: whole sheet, triangle, wedge.
-  if (folds >= 3) return VIEWS.cutting;
+  // While folding, frame the paper as it shrinks: whole sheet, half, wedge.
+  if (folds >= method.narrowAt) return VIEWS.cutting;
   if (folds >= 1) return VIEWS.folded;
   return VIEWS.flat;
 }
@@ -63,11 +65,13 @@ function viewFor(stage: Stage, folds: number) {
 function CameraRig({
   stage,
   folds,
+  method,
   controls,
   panel,
 }: {
   stage: Stage;
   folds: number;
+  method: FoldMethod;
   controls: React.RefObject<OrbitControlsImpl | null>;
   panel: React.RefObject<HTMLDivElement | null>;
 }) {
@@ -96,7 +100,7 @@ function CameraRig({
     }
 
     if (!moving.current || !c) return;
-    const view = viewFor(stage, folds);
+    const view = viewFor(stage, folds, method);
     // Back off until the content fits across a narrow screen and above the panel.
     const across = view.fit[0] / (Math.tan(HALF_FOV) * cam.aspect);
     const up = view.fit[1] / (Math.tan(HALF_FOV) * Math.max(0.3, 1 - covered / size.height));
@@ -183,21 +187,8 @@ function Sway({ active, children }: { active: boolean; children: React.ReactNode
   return <group ref={group}>{children}</group>;
 }
 
-/** The four folds, one step each, in the order of the paper guide. */
-const FOLD_STEPS = [
-  {
-    title: "Fold corner to corner",
-    body: "Start with a square of paper. Bring the bottom right corner up to the top left one, making a triangle.",
-  },
-  { title: "Fold in half", body: "Fold the triangle in half, bringing its two sharp corners together." },
-  { title: "Fold one side across", body: "From the point at the bottom, fold the left side over by a third." },
-  {
-    title: "Fold the other side across",
-    body: "Fold the right side over on top, so the paper makes a narrow cone twelve layers thick.",
-  },
-];
-
-const STEP_COUNT = FOLD_STEPS.length + 3;
+/** Four folds, then the trim, the cuts, and unfolding. */
+const STEP_COUNT = 4 + 3;
 
 const TOOLS: { id: CutTool; label: string; hint: string }[] = [
   { id: "freehand", label: "Freehand", hint: "Draw a loop across the folded paper with a finger or the mouse. Letting go cuts it out of all twelve layers." },
@@ -205,8 +196,7 @@ const TOOLS: { id: CutTool; label: string; hint: string }[] = [
   { id: "curve", label: "Curve", hint: "Tap for a sharp corner, or press and drag to pull a smooth curve. Tap the first point again (or press Cut) to cut." },
 ];
 
-const COPY: Record<Stage, { title: string; body: string }> = {
-  flat: FOLD_STEPS[0],
+const COPY: Record<Exclude<Stage, "flat">, { title: string; body: string }> = {
   folding: { title: "Folding…", body: "" },
   trimming: {
     title: "Trim the top",
@@ -225,6 +215,7 @@ export function App() {
   /** How many folds the paper is heading for, 0 to 4. */
   const [folds, setFolds] = useState(0);
   const [tool, setTool] = useState<CutTool>("freehand");
+  const [method, setMethod] = useState<FoldMethod>(START_METHOD);
   const [anchors, setAnchors] = useState<Anchor[]>([]);
   const fold = useRef(0);
   const controls = useRef<OrbitControlsImpl>(null);
@@ -232,6 +223,8 @@ export function App() {
 
   const foldTarget =
     stage === "folding" || stage === "trimming" || stage === "cutting" ? folds : stage === "unfolding" ? 0 : fold.current;
+
+  mask.setMethod(method);
 
   useEffect(() => {
     if (DEMO !== null && mask.count === 0) {
@@ -253,12 +246,14 @@ export function App() {
     setStage((s) => {
       if (s === "unfolding") return "open";
       if (s !== "folding") return s;
-      if (folds < FOLD_STEPS.length) return "flat";
+      if (folds < method.steps.length) return "flat";
       return mask.isTrimmed ? "cutting" : "trimming";
     });
   };
 
-  const copy = stage === "flat" ? FOLD_STEPS[folds] : COPY[stage];
+  const copy = stage === "flat" ? method.steps[folds] : COPY[stage];
+  // The way to fold can change until the first fold is made.
+  const choosing = stage === "flat" && folds === 0;
   const step =
     stage === "flat"
       ? folds + 1
@@ -306,7 +301,7 @@ export function App() {
         <directionalLight position={[-1, 1.5, -3]} intensity={1.4} color="#ffd7a1" />
 
         <Sway active={stage === "open"}>
-          <Paper fold={fold} mask={mask.texture} creased={stage !== "flat" && !(stage === "still" && cuts === 0)} />
+          <Paper method={method} fold={fold} mask={mask.texture} creased={stage !== "flat" && !(stage === "still" && cuts === 0)} />
         </Sway>
         {stage === "trimming" && <TrimGuide />}
         {stage === "cutting" && (
@@ -324,7 +319,7 @@ export function App() {
         <Ready />
 
         <FoldDriver fold={fold} target={foldTarget} onArrive={onArrive} />
-        <CameraRig stage={stage} folds={folds} controls={controls} panel={panel} />
+        <CameraRig stage={stage} folds={folds} method={method} controls={controls} panel={panel} />
         <OrbitControls
           ref={controls}
           enabled={stage === "flat" || stage === "open" || stage === "still"}
@@ -338,6 +333,21 @@ export function App() {
         {step && (
           <div className="step">
             Step {step} of {STEP_COUNT}
+          </div>
+        )}
+        {choosing && (
+          <div className="tools" role="radiogroup" aria-label="Way to fold">
+            {FOLD_METHODS.map((m) => (
+              <button
+                key={m.id}
+                role="radio"
+                aria-checked={method === m}
+                className={method === m ? "tool on" : "tool"}
+                onClick={() => setMethod(m)}
+              >
+                {m.label}
+              </button>
+            ))}
           </div>
         )}
         <h1>{copy.title}</h1>
@@ -431,7 +441,7 @@ export function App() {
             <>
               <button
                 onClick={() => {
-                  setFolds(FOLD_STEPS.length);
+                  setFolds(method.steps.length);
                   setStage("folding");
                 }}
               >
