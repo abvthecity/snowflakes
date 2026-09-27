@@ -67,7 +67,9 @@ class PaperMaterial extends THREE.MeshPhysicalNodeMaterial {
 export type PaperNodeMaterial = PaperMaterial;
 
 export function createPaperNodeMaterial(mask: THREE.Texture): PaperNodeMaterial {
-  const material = new PaperMaterial({ side: THREE.DoubleSide, alphaTest: 0.5 });
+  // Alpha to coverage turns the mask's edge into multisample coverage, so the
+  // cut outlines come out as smooth as the sheet's own edges instead of stepped.
+  const material = new PaperMaterial({ side: THREE.DoubleSide, alphaTest: 0.5, alphaToCoverage: true });
   const { crease, tint } = material;
 
   // Where this point lies on the flat sheet, and how much sheet one pixel covers.
@@ -79,7 +81,11 @@ export function createPaperNodeMaterial(mask: THREE.Texture): PaperNodeMaterial 
   const albedo = surface.z;
   const shade = surface.w;
 
-  material.opacityNode = texture(mask, uv()).r;
+  // Three ramps alpha to coverage from alphaTest up across one pixel's worth
+  // of change; start it half a pixel early, so the ramp is centred on the cut.
+  const cut = texture(mask, uv()).r;
+  material.opacityNode = cut;
+  material.alphaTestNode = float(0.5).sub(fwidth(cut).mul(0.5));
 
   // The sheet's colour, mottled by the pulp; creases hold a little shadow in their furrows.
   material.colorNode = tint.mul(albedo).mul(float(1).sub(shade.mul(0.07)));

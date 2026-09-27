@@ -66,6 +66,8 @@ export function createPaperMaterial(mask: THREE.Texture): THREE.MeshPhysicalMate
     sheenColor: new THREE.Color("#ffffff"),
     alphaMap: mask,
     alphaTest: 0.5,
+    // Smooth the cut outlines with the canvas's multisampling rather than a hard step.
+    alphaToCoverage: true,
     side: THREE.DoubleSide,
   });
 
@@ -85,6 +87,14 @@ export function createPaperMaterial(mask: THREE.Texture): THREE.MeshPhysicalMate
           vec4 sampledDiffuseColor = texture2D( map, vMapUv );
           diffuseColor.rgb *= mix( vec3( 0.93 ), vec3( 1.04 ), sampledDiffuseColor.r );
         #endif`,
+      )
+      // As three does for alpha to coverage, but with the one-pixel ramp
+      // centred on the cut rather than starting at it.
+      .replace(
+        "#include <alphatest_fragment>",
+        `float cutWidth = fwidth( diffuseColor.a );
+        diffuseColor.a = smoothstep( alphaTest - 0.5 * cutWidth, alphaTest + 0.5 * cutWidth, diffuseColor.a );
+        if ( diffuseColor.a == 0.0 ) discard;`,
       )
       .replace(
         "#include <lights_fragment_end>",
