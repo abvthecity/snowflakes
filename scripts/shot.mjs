@@ -138,24 +138,53 @@ try {
   await check("cut");
   await page.screenshot({ path: new URL("9-trimmed.png", out).pathname });
   console.log("shots/9-trimmed.png");
-  // Straight cuts: click three corners, then the first again to close.
-  await page.getByRole("radio", { name: "Straight" }).click();
-  for (const [x, y] of [[205, 300], [280, 330], [230, 372], [205, 300]]) await page.mouse.click(x, y);
-  // A curve: a sharp corner, two dragged (smooth) points, then close with the Cut button.
-  await page.getByRole("radio", { name: "Curve" }).click();
-  await page.mouse.click(215, 430);
-  for (const [x, y, dx] of [[255, 470, 30], [215, 520, -30]]) {
-    await page.mouse.move(x, y);
-    await page.mouse.down();
-    await page.mouse.move(x + dx, y + 10, { steps: 2 });
-    await page.mouse.up();
-  }
-  await page.mouse.move(195, 480);
+  // One pair of scissors. Clicks drop corners: with two down, the piece they
+  // would cut away (closed through the pointer) fades.
+  await page.mouse.click(205, 300);
+  await page.mouse.click(280, 330);
+  await page.mouse.move(230, 372, { steps: 2 });
   await frames(page, 3);
-  await check("drawing a curve");
-  await page.screenshot({ path: new URL("9b-pen-tools.png", out).pathname });
-  console.log("shots/9b-pen-tools.png");
+  await page.screenshot({ path: new URL("9a-cut-preview.png", out).pathname });
+  console.log("shots/9a-cut-preview.png");
+  // Click the last corner, then the first again to cut.
+  for (const [x, y] of [[230, 372], [205, 300]]) await page.mouse.click(x, y);
+  // A drag draws freehand, fading what it encloses as it goes; ending back on its start cuts it.
+  const ring = (cx, cy, rx, ry, n = 24) =>
+    Array.from({ length: n + 1 }, (_, i) => [cx + rx * Math.sin((i / n) * 2 * Math.PI), cy - ry * Math.cos((i / n) * 2 * Math.PI)]);
+  const lasso = ring(225, 470, 26, 36);
+  await page.mouse.move(...lasso[0]);
+  await page.mouse.down();
+  for (const [x, y] of lasso.slice(1, 17)) await page.mouse.move(x, y);
+  await frames(page, 3);
+  await page.screenshot({ path: new URL("9b-drawing.png", out).pathname });
+  console.log("shots/9b-drawing.png");
+  await check("drawing");
+  for (const [x, y] of lasso.slice(17)) await page.mouse.move(x, y);
+  await page.mouse.up();
+  await page.mouse.move(600, 560);
+  await frames(page, 3);
+  // The loop is cut and smoothed into a few curves, with points and handles to reshape it.
+  await page.screenshot({ path: new URL("9c-smoothed.png", out).pathname });
+  console.log("shots/9c-smoothed.png");
+  // Mixed: a corner, then a drag that carries on from it, then close with the Cut button.
+  await page.mouse.click(175, 380);
+  await page.mouse.move(195, 395);
+  await page.mouse.down();
+  for (const [x, y] of [[205, 410], [203, 425], [193, 436], [180, 440]]) await page.mouse.move(x, y);
+  await page.mouse.up();
   await page.getByRole("button", { name: "Cut", exact: true }).click();
+  // A band right across the top severs the tip: it fades with the band before
+  // the cut, and falls away with it after.
+  for (const [x, y] of [[105, 243], [335, 285], [335, 302]]) await page.mouse.click(x, y);
+  await page.mouse.move(105, 262, { steps: 2 });
+  await frames(page, 3);
+  await page.screenshot({ path: new URL("9d-severed-preview.png", out).pathname });
+  console.log("shots/9d-severed-preview.png");
+  for (const [x, y] of [[105, 262], [105, 243]]) await page.mouse.click(x, y);
+  await page.mouse.move(700, 560);
+  await frames(page, 3);
+  await page.screenshot({ path: new URL("9e-severed.png", out).pathname });
+  console.log("shots/9e-severed.png");
   await page.getByRole("button", { name: "Surprise me" }).click();
   await page.getByRole("button", { name: "Unfold" }).click();
   await check("unfolding");
@@ -194,19 +223,13 @@ try {
   await phoneCheck("trim");
   await phone.getByRole("button", { name: "Trim" }).tap();
   await phoneCheck("cut");
-  // Freehand: a loop drawn with a finger.
-  const loop = Array.from({ length: 13 }, (_, i) => [190 + 28 * Math.cos((i / 12) * 2 * Math.PI), 290 + 22 * Math.sin((i / 12) * 2 * Math.PI)]);
+  // A loop drawn with a finger, back to where it started, cuts.
+  const loop = Array.from({ length: 25 }, (_, i) => [190 + 28 * Math.sin((i / 24) * 2 * Math.PI), 290 - 22 * Math.cos((i / 24) * 2 * Math.PI)]);
   await drag(loop);
-  // Straight: tap three corners, then the first again.
-  await phone.getByRole("radio", { name: "Straight" }).tap();
-  for (const [x, y] of [[150, 380], [218, 398], [172, 440], [150, 380]]) await phone.touchscreen.tap(x, y);
-  // Curve: a tapped corner, a dragged smooth point, another corner, then Cut.
-  await phone.getByRole("radio", { name: "Curve" }).tap();
-  await phone.touchscreen.tap(185, 470);
-  await drag([[222, 492], [236, 500], [250, 508]]);
-  await phone.touchscreen.tap(195, 525);
+  // Three tapped corners: the piece they enclose fades before the shape is closed.
+  for (const [x, y] of [[150, 380], [218, 398], [172, 440]]) await phone.touchscreen.tap(x, y);
   await phoneShot("12-phone-cutting");
-  await phoneCheck("drawing a curve");
+  await phoneCheck("drawing");
   await phone.getByRole("button", { name: "Cut", exact: true }).tap();
   await phone.getByRole("button", { name: "Unfold" }).tap();
   await phoneCheck("unfolding");
