@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cutAnchors, cutShape, paperColor, finalPaper, parseRecording, penCut, type TimelineEvent } from "./timeline.ts";
+import { cutAnchors, cutShape, paperColorId, finalPaper, parseRecording, penCut, type TimelineEvent } from "./timeline.ts";
 
 const loop = [[0, 0.5], [0.05, 0.55], [0, 0.6], [-0.05, 0.55]] as [number, number][];
 
@@ -63,8 +63,7 @@ test("the fold method is kept, and defaults to diagonal", () => {
   assert.equal(parseRecording({ v: 1, fold: 3, events }), "bad fold method");
 });
 
-test("the paper colour is kept, and white when unset", () => {
-  assert.equal(paperColor({ id: "classic" }), "#ffffff");
-  assert.equal(paperColor({ id: "classic", params: { color: "#F7D6E0" } }), "#F7D6E0");
-  assert.equal(paperColor({ id: "classic", params: { color: "red; x" } }), "#ffffff");
+test("the paper colour is kept", () => {
+  assert.equal(paperColorId({ id: "classic" }), undefined);
+  assert.equal(paperColorId({ id: "classic", params: { color: "mint" } }), "mint");
 });

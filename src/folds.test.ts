@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SECTORS, TRIM_LINE, WEDGE, apply, invert } from "./folds.ts";
+import { COVER, SECTORS, TRIM_LINE, WEDGE, apply, invert } from "./folds.ts";
 
 const deg = (r: number) => (r * 180) / Math.PI;
 
@@ -47,4 +47,11 @@ test("the trim opens into a regular hexagon", () => {
   const angles = [...corners].sort((x, y) => x - y);
   assert.equal(angles.length, 6);
   angles.forEach((a, i) => assert.equal((a - angles[0] + 360) % 360, i * 60));
+});
+
+test("a flat sheet hides nothing; folded up, all but the outside layers are covered", () => {
+  assert.ok(COVER[0].every((c) => !c.above && !c.below));
+  const seen = (side: "above" | "below") => SECTORS.filter((s) => !COVER[4][s.index][side]).map((s) => s.layers[4]);
+  assert.ok(seen("above").includes(11) && seen("above").length < 12, `from the front: ${seen("above")}`);
+  assert.ok(seen("below").includes(0) && seen("below").length < 12, `from the back: ${seen("below")}`);
 });

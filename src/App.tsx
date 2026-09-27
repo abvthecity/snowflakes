@@ -14,8 +14,9 @@ import { Snowfall } from "./Snowfall";
 import { Stroke } from "./Stroke";
 import { webgpu } from "./gpu";
 import { randomCuts } from "./randomCuts";
-import { Recorder, cutAnchors, cutShape, drawTime, finalPaper, outlineCut, penCut, type Recording, type Step } from "./timeline";
+import { Recorder, paperColorId, cutAnchors, cutShape, drawTime, finalPaper, outlineCut, penCut, type Recording, type Step } from "./timeline";
 import { loadSnowflake, saveSnowflake, shareUrl } from "./api";
+import { PAPER_COLOURS, paperColour, type PaperColour } from "./paperColours";
 
 type Stage = "flat" | "folding" | "trimming" | "cutting" | "unfolding" | "open" | "still";
 
@@ -26,6 +27,11 @@ const PARAMS = new URLSearchParams(location.search);
 const DEMO = PARAMS.get("demo");
 //   &lite          skip shadows and antialiasing (software renderers, slow GPUs)
 const LITE = PARAMS.has("lite");
+//   &paper=<id>    start on that colour of paper (see paperColours.ts)
+const START_COLOUR = paperColour(PARAMS.get("paper"));
+
+/** How a saved snowflake records its paper: today's paper, in the chosen colour. */
+const paperChoice = (c: PaperColour) => ({ id: "classic", params: { color: c.id } });
 const STILL_FOLD = PARAMS.has("fold") ? Math.min(4, Math.max(0, Number(PARAMS.get("fold")))) : null;
 //   ?s=<id>        open a saved snowflake, which can replay how it was cut
 const SHARED = PARAMS.get("s");
@@ -75,11 +81,11 @@ function CameraRig({
   stage: Stage;
   folds: number;
   controls: React.RefObject<OrbitControlsImpl | null>;
-  panel: React.RefObject<HTMLDivElement | null>;
+  panel: React.RefObject<HTMLElement | null>;
 }) {
   const { camera, size } = useThree();
   const moving = useRef(true);
-  const inset = useRef(0);
+  const inset = useRef("");
   const goal = useMemo(() => new THREE.Vector3(), []);
   const offset = useMemo(() => new THREE.Vector3(), []);
   useEffect(() => {
@@ -90,22 +96,26 @@ function CameraRig({
     const c = controls.current;
     const cam = camera as THREE.PerspectiveCamera;
 
-    // On a phone the panel spans the bottom of the screen: aim the view at
-    // the space above it, by shifting the frustum up by half its height.
+    // On a phone the panel spans the bottom of the screen; on a wider screen
+    // it floats on the right. Aim the view at the space the panel leaves
+    // free, by shifting the frustum by half of what the panel covers.
     const rect = panel.current?.getBoundingClientRect();
-    const covered = rect && rect.width > size.width * 0.8 ? size.height - rect.top + 8 : 0;
-    if (covered !== inset.current) {
-      inset.current = covered;
-      if (covered) cam.setViewOffset(size.width, size.height, 0, covered / 2, size.width, size.height);
+    const wide = rect && rect.width > size.width * 0.8;
+    const below = rect && wide ? size.height - rect.top + 8 : 0;
+    const right = rect && !wide && rect.left > size.width / 2 ? size.width - rect.left + 8 : 0;
+    const key = `${right},${below}`;
+    if (key !== inset.current) {
+      inset.current = key;
+      if (below || right) cam.setViewOffset(size.width, size.height, right / 2, below / 2, size.width, size.height);
       else cam.clearViewOffset();
       moving.current = true;
     }
 
     if (!moving.current || !c) return;
     const view = viewFor(stage, folds);
-    // Back off until the content fits across a narrow screen and above the panel.
-    const across = view.fit[0] / (Math.tan(HALF_FOV) * cam.aspect);
-    const up = view.fit[1] / (Math.tan(HALF_FOV) * Math.max(0.3, 1 - covered / size.height));
+    // Back off until the content fits in the space the panel leaves free.
+    const across = view.fit[0] / (Math.tan(HALF_FOV) * cam.aspect * Math.max(0.3, 1 - right / size.width));
+    const up = view.fit[1] / (Math.tan(HALF_FOV) * Math.max(0.3, 1 - below / size.height));
     offset.copy(view.position).sub(view.target);
     offset.setLength(Math.max(offset.length(), across, up));
     goal.copy(view.target).add(offset);
@@ -336,13 +346,13 @@ const CUT_HINTS = {
 
 const COPY: Record<Stage, { title: string; body: string }> = {
   flat: FOLD_STEPS[0],
-  folding: { title: "Folding…", body: "" },
+  folding: { title: "", body: "" },
   trimming: {
     title: "Trim the top",
     body: "Slice straight across the top of the folded paper, along the dashed line. That is what opens into a hexagon instead of a square.",
   },
   cutting: { title: "Cut", body: "" },
-  unfolding: { title: "Unfolding…", body: "" },
+  unfolding: { title: "", body: "" },
   still: { title: "Paper snowflake", body: "" },
   open: { title: "Your snowflake", body: "Drag to turn it. Fold it back up to keep cutting." },
 };
@@ -360,7 +370,11 @@ type SaveState = { state: "idle" } | { state: "saving" } | { state: "saved"; id:
 
 export function App() {
   const mask = useMemo(() => new CutMask(), []);
-  const recorder = useMemo(() => new Recorder(), []);
+  const recorder = useMemo(() => {
+    const r = new Recorder();
+    r.reset(paperChoice(START_COLOUR));
+    return r;
+  }, []);
   const [stage, setStage] = useState<Stage>("flat");
   const [cuts, setCuts] = useState(0);
   /** How many folds the paper is heading for, 0 to 4. */
@@ -374,6 +388,12 @@ export function App() {
   const [replaying, setReplaying] = useState(false);
   /** The cut being drawn (or reshaped) in a replay, and whether it has closed. */
   const [ghost, setGhost] = useState<{ points: Vec2[]; closed: boolean }>({ points: [], closed: false });
+  const [colour, setColour] = useState(START_COLOUR);
+  /** Colours are picked before the first fold, so the recording starts on that paper. */
+  const pickColour = (c: PaperColour) => {
+    setColour(c);
+    recorder.paper = paperChoice(c);
+  };
   const fold = useRef(0);
   const foldSpeed = useRef(1);
   /** Set to skip the rest of a replay; each step then happens at once. */
@@ -381,7 +401,7 @@ export function App() {
   /** Resolved when the paper arrives at its fold target, for replays to wait on. */
   const arrivals = useRef<(() => void)[]>([]);
   const controls = useRef<OrbitControlsImpl>(null);
-  const panel = useRef<HTMLDivElement>(null);
+  const panel = useRef<HTMLFieldSetElement>(null);
   const held = useRef(false);
 
   const foldTarget =
@@ -419,6 +439,7 @@ export function App() {
       for (const c of paper.cuts) mask.cut(c);
       setCuts(mask.count);
       recorder.resume(recording);
+      setColour(paperColour(paperColorId(recording.paper)));
       setSave({ state: "saved", id: SHARED });
       setShared(true);
       setOpening(null);
@@ -500,6 +521,7 @@ export function App() {
     skip.current = false;
     foldSpeed.current = 1;
     setReplaying(true);
+    setColour(paperColour(paperColorId(recording.paper)));
     newPaper();
     const wait = async (ms: number) => {
       if (!skip.current) await sleep(ms);
@@ -576,30 +598,37 @@ export function App() {
     }
   };
 
+  // While the paper folds or unfolds, the panel keeps showing the step that
+  // started it, with its buttons disabled, rather than swapping to a
+  // placeholder and back: the panel, and the view framed above it, hold still.
+  const busy = stage === "folding" || stage === "unfolding";
+  const settled = useRef({ stage, folds });
+  if (!busy) settled.current = { stage, folds };
+  const shown = busy ? settled.current : { stage, folds };
+
   const copy = opening
     ? opening === "loading"
       ? { title: "Opening a snowflake…", body: "" }
       : { title: "Snowflake not found", body: "That link doesn't lead to a saved snowflake. Fold a new one here instead." }
     : replaying
       ? { title: "Replaying…", body: stage === "flat" ? (FOLD_STEPS[folds]?.body ?? "") : COPY[stage].body }
-      : stage === "flat"
-        ? FOLD_STEPS[folds]
-        : stage === "open" && shared
+      : shown.stage === "flat"
+        ? FOLD_STEPS[shown.folds]
+        : shown.stage === "open" && shared
           ? { title: "A paper snowflake", body: "Someone folded and cut this. Watch how they made it, or fold it back up and keep cutting." }
-          : COPY[stage];
+          : COPY[shown.stage];
   const step =
     opening || replaying
       ? null
-      : stage === "flat"
-        ? folds + 1
-        : stage === "trimming"
+      : shown.stage === "flat"
+        ? shown.folds + 1
+        : shown.stage === "trimming"
           ? 5
-          : stage === "cutting"
+          : shown.stage === "cutting"
             ? 6
-            : stage === "open" || stage === "unfolding"
+            : shown.stage === "open"
               ? 7
               : null;
-  const busy = stage === "folding" || stage === "unfolding";
   /** A shape is being drawn and has not been cut yet. */
   const open = !path.closed && path.anchors.length > 0;
   const canReplay = recorder.events.some((e) => e.k === "cut");
@@ -640,7 +669,12 @@ export function App() {
 
         <DragTurn enabled={stage === "flat" || stage === "open" || stage === "still"} controls={controls} held={held}>
           <Sway active={stage === "open"} held={held}>
-            <Paper fold={fold} mask={mask.texture} creased={stage !== "flat" && !(stage === "still" && cuts === 0)} />
+            <Paper
+              fold={fold}
+              mask={mask.texture}
+              creased={stage !== "flat" && !(stage === "still" && cuts === 0)}
+              colour={colour.hex}
+            />
           </Sway>
         </DragTurn>
         {stage === "trimming" && <TrimGuide />}
@@ -685,23 +719,41 @@ export function App() {
         />
       </Canvas>
 
-      <div className="panel" ref={panel}>
-        {step && (
-          <div className="step">
-            Step {step} of {STEP_COUNT}
-          </div>
-        )}
+      <fieldset className="panel" ref={panel} disabled={busy && !replaying} aria-busy={busy}>
+        <div className="step">{step ? `Step ${step} of ${STEP_COUNT}` : "\u00a0"}</div>
         <h1>{copy.title}</h1>
-        {copy.body && <p>{copy.body}</p>}
-        {stage === "cutting" && !replaying && (
-          <p>{CUT_HINTS[path.closed ? "closed" : path.anchors.length ? "open" : "start"]}</p>
-        )}
-        {stage === "open" && !replaying && save.state === "saved" && (
-          <div className="share">
-            <input readOnly value={shareUrl(save.id)} aria-label="Link to this snowflake" onFocus={(e) => e.target.select()} />
-          </div>
-        )}
-        {stage === "open" && !replaying && save.state === "error" && <p className="error">Couldn't save: {save.message}</p>}
+        <div className="body">
+          {copy.body && <p>{copy.body}</p>}
+          {shown.stage === "flat" && shown.folds === 0 && !replaying && !opening && (
+            <div className="papers">
+              <span className="papers-label">Paper</span>
+              <div className="swatches" role="radiogroup" aria-label="Paper colour">
+                {PAPER_COLOURS.map((c) => (
+                  <button
+                    key={c.id}
+                    role="radio"
+                    aria-checked={colour.id === c.id}
+                    aria-label={c.name}
+                    title={c.name}
+                    className={colour.id === c.id ? "swatch on" : "swatch"}
+                    style={{ "--swatch": c.hex } as React.CSSProperties}
+                    onClick={() => pickColour(c)}
+                  />
+                ))}
+              </div>
+              <span className="papers-name">{colour.name}</span>
+            </div>
+          )}
+          {shown.stage === "cutting" && !replaying && (
+            <p>{CUT_HINTS[path.closed ? "closed" : path.anchors.length ? "open" : "start"]}</p>
+          )}
+          {shown.stage === "open" && !replaying && save.state === "saved" && (
+            <div className="share">
+              <input readOnly value={shareUrl(save.id)} aria-label="Link to this snowflake" onFocus={(e) => e.target.select()} />
+            </div>
+          )}
+          {shown.stage === "open" && !replaying && save.state === "error" && <p className="error">Couldn't save: {save.message}</p>}
+        </div>
         <div className="actions">
           {replaying && (
             <button className="quiet" onClick={() => (skip.current = true)}>
@@ -710,9 +762,9 @@ export function App() {
           )}
           {!replaying && opening !== "loading" && (
             <>
-              {stage === "flat" && <button onClick={() => record({ k: "fold" })}>Fold</button>}
-              {stage === "trimming" && <button onClick={() => record({ k: "trim" })}>Trim</button>}
-              {stage === "cutting" && open && (
+              {shown.stage === "flat" && <button onClick={() => record({ k: "fold" })}>Fold</button>}
+              {shown.stage === "trimming" && <button onClick={() => record({ k: "trim" })}>Trim</button>}
+              {shown.stage === "cutting" && open && (
                 <>
                   <button
                     disabled={path.anchors.length < 3}
@@ -728,7 +780,7 @@ export function App() {
                   </button>
                 </>
               )}
-              {stage === "cutting" && !open && (
+              {shown.stage === "cutting" && !open && (
                 <>
                   <button
                     disabled={cuts === 0}
@@ -760,7 +812,7 @@ export function App() {
                   </button>
                 </>
               )}
-              {stage === "open" && (
+              {shown.stage === "open" && (
                 <>
                   {save.state === "saved" ? (
                     <button onClick={() => copyLink(save.id)}>{save.copied ? "Link copied" : "Share link"}</button>
@@ -780,7 +832,7 @@ export function App() {
                   <button
                     className="quiet"
                     onClick={() => {
-                      recorder.reset();
+                      recorder.reset(paperChoice(colour));
                       setSave({ state: "idle" });
                       setShared(false);
                       if (SHARED || save.state === "saved") history.replaceState(null, "", location.pathname);
@@ -793,9 +845,8 @@ export function App() {
               )}
             </>
           )}
-          {busy && !replaying && <span className="hint">…</span>}
         </div>
-      </div>
+      </fieldset>
     </div>
   );
 }

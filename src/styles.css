@@ -16,17 +16,32 @@ body {
 }
 .app { position: fixed; inset: 0; }
 .app canvas { touch-action: none; }
+/*
+ * The panel keeps one size through every step, so neither it nor the view
+ * framed around it moves when its text or buttons change: a fixed width and
+ * height, the text in between taking up the slack and the buttons pinned to
+ * the bottom.
+ */
 .panel {
   position: absolute;
-  left: 24px;
-  bottom: 24px;
-  max-width: min(360px, calc(100vw - 48px));
+  /* Floats right of centre, clear of the snowflake, which the camera frames to its left. */
+  top: 50%;
+  right: clamp(24px, 8vw, 160px);
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  width: min(360px, calc(100vw - 48px));
+  height: 248px;
+  min-width: 0;
+  margin: 0;
   padding: 18px 20px;
   border-radius: 14px;
   background: rgba(12, 16, 39, 0.55);
   backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
+.panel .body { flex: 1; min-height: 0; overflow-y: auto; }
+.panel .actions { flex: none; margin-top: auto; }
 .panel .step {
   margin: 0 0 4px;
   color: var(--muted);
@@ -51,7 +66,6 @@ button {
 }
 button.quiet { background: transparent; color: var(--ink); border-color: rgba(255, 255, 255, 0.25); }
 button:disabled { opacity: 0.4; cursor: default; }
-.hint { color: var(--muted); }
 .error { color: #ffb4a8; }
 .share { margin: 0 0 10px; }
 .share input {
@@ -66,13 +80,47 @@ button:disabled { opacity: 0.4; cursor: default; }
 }
 @media (max-width: 520px) {
   .panel {
+    top: auto;
     left: 12px;
     right: 12px;
+    transform: none;
     bottom: calc(12px + env(safe-area-inset-bottom, 0px));
-    max-width: none;
+    width: auto;
+    height: 236px;
     padding: 14px 16px;
   }
   .panel h1 { font-size: 19px; }
   .panel p { font-size: 14px; margin-bottom: 10px; }
   button { min-height: 44px; padding: 10px 18px; }
+}
+.papers { display: flex; align-items: center; gap: 8px; margin: 0 0 14px; }
+.papers-label, .papers-name { color: var(--muted); font-size: 14px; }
+.swatches { display: flex; }
+/* Each swatch is a 36px target around a 26px dot of the paper's colour. */
+.swatches .swatch {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+}
+.swatches .swatch::before {
+  content: "";
+  position: absolute;
+  inset: 5px;
+  border-radius: 50%;
+  background: var(--swatch);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+.swatches .swatch.on::before { box-shadow: 0 0 0 2px #1b2440, 0 0 0 4px var(--accent); }
+@media (max-width: 520px) {
+  .papers { margin-bottom: 10px; }
+  .swatches .swatch { width: 42px; height: 42px; min-height: 0; padding: 0; }
+  .swatches .swatch::before { inset: 7px; }
+}
+@media (max-width: 520px) {
+  .papers-label { display: none; }
 }

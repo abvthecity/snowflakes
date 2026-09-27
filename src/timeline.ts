@@ -38,10 +38,10 @@ export interface PaperChoice {
 /** Today's paper, and what recordings without a `paper` were cut from. */
 export const DEFAULT_PAPER: PaperChoice = { id: "classic" };
 
-/** The paper's colour, saved as `params.color` ("#rrggbb"); white when it wasn't chosen. */
-export function paperColor(paper: PaperChoice): string {
+/** The paper's colour id (see paperColours.ts), saved as `params.color`, if one was chosen. */
+export function paperColorId(paper: PaperChoice): string | undefined {
   const c = paper.params?.color;
-  return typeof c === "string" && /^#[0-9a-f]{6}$/i.test(c) ? c : "#ffffff";
+  return typeof c === "string" ? c : undefined;
 }
 
 /**
