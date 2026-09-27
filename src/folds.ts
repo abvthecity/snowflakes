@@ -1,17 +1,17 @@
-// The geometry of folding a square of paper diagonally four times.
+// The geometry of folding a square of paper into a six-pointed snowflake.
 //
 // The paper is the square [-1, 1]² in the XY plane. Every fold line passes
-// through its centre, so the paper splits into 16 triangular sectors of 22.5°
+// through its centre, so the paper splits into 12 triangular sectors of 30°
 // each, and every fold maps whole sectors onto whole sectors:
 //
-//   fold 1  along the diagonal y = x          (45°)    square   → triangle
-//   fold 2  along the other diagonal y = -x   (135°)   triangle → quarter
-//   fold 3  along the vertical centre line    (90°)    quarter  → eighth
-//   fold 4  bisecting that                    (112.5°) eighth   → 16th
+//   fold 1  along the diagonal y = x         (45°)   square   → triangle
+//   fold 2  in half, along y = -x            (135°)  triangle → quarter (90°)
+//   fold 3  one side across, at 105°         ┐ the cone: the quarter
+//   fold 4  the other side across, at 75°    ┘ folded in thirds (30°)
 //
-// What stays put is the thin wedge between 90° and 112.5°, pointing down at
-// the centre with the top edge of the square across its wide end. That is
-// the folded paper you cut.
+// What stays put is the 30° wedge between 75° and 105°, standing straight up
+// from the centre. Twelve layers of mirror images make six-fold symmetry,
+// and trimming the wedge's top along TRIM_LINE opens into a hexagon.
 
 export type Vec2 = readonly [number, number];
 /** A 2×2 linear map, row-major: [a, b, c, d] maps (x, y) to (ax + by, cx + dy). */
@@ -19,14 +19,19 @@ export type Mat2 = readonly [number, number, number, number];
 
 const DEG = Math.PI / 180;
 
-export const SECTOR_COUNT = 16;
-export const SECTOR_ANGLE = 22.5 * DEG;
+export const SECTOR_COUNT = 12;
+export const SECTOR_ANGLE = 30 * DEG;
+/** Sector boundaries run from here in SECTOR_ANGLE steps; every square corner lands on one. */
+const SECTOR_START = 45 * DEG;
 
 /** Fold line directions, in the order the paper is folded. */
-export const FOLD_ANGLES = [45 * DEG, 135 * DEG, 90 * DEG, 112.5 * DEG] as const;
+export const FOLD_ANGLES = [45 * DEG, 135 * DEG, 105 * DEG, 75 * DEG] as const;
+
+/** The folded wedge, as the angles of its two edges. */
+export const WEDGE = [75 * DEG, 105 * DEG] as const;
 
 /** A direction inside the wedge that never moves; decides which side of each fold is kept. */
-const KEPT_DIRECTION: Vec2 = [Math.cos(101.25 * DEG), Math.sin(101.25 * DEG)];
+const KEPT_DIRECTION: Vec2 = [0, 1];
 
 export const IDENTITY: Mat2 = [1, 0, 0, 1];
 
@@ -55,6 +60,11 @@ export function side(a: number, p: Vec2): number {
   return Math.cos(a) * p[1] - Math.sin(a) * p[0];
 }
 
+/** The point at distance `r` from the centre in direction `a`. */
+export function polar(r: number, a: number): Vec2 {
+  return [r * Math.cos(a), r * Math.sin(a)];
+}
+
 /** Where the ray from the centre at angle `t` leaves the square. */
 function squareEdge(t: number): Vec2 {
   const c = Math.cos(t);
@@ -77,32 +87,33 @@ export interface Sector {
 
 function buildSectors(): Sector[] {
   const base = Array.from({ length: SECTOR_COUNT }, (_, i) => {
-    const t0 = i * SECTOR_ANGLE;
-    const t1 = (i + 1) * SECTOR_ANGLE;
-    const mid = (i + 0.5) * SECTOR_ANGLE;
+    const t0 = SECTOR_START + i * SECTOR_ANGLE;
+    const mid = t0 + SECTOR_ANGLE / 2;
     return {
       index: i,
-      triangle: [[0, 0], squareEdge(t0), squareEdge(t1)] as const,
-      probe: [Math.cos(mid), Math.sin(mid)] as Vec2,
+      triangle: [[0, 0], squareEdge(t0), squareEdge(t0 + SECTOR_ANGLE)] as const,
+      probe: polar(1, mid),
       moves: [] as boolean[],
       folded: IDENTITY,
       layers: [0],
     };
   });
 
-  let height = 1;
   for (const a of FOLD_ANGLES) {
     const keptSide = Math.sign(side(a, KEPT_DIRECTION));
-    for (const s of base) {
-      const now = apply(s.folded, s.probe);
-      const moving = Math.sign(side(a, now)) !== keptSide;
-      s.moves.push(moving);
+    const moving = base.map((s) => Math.sign(side(a, apply(s.folded, s.probe))) !== keptSide);
+    const top = (m: boolean) =>
+      Math.max(-1, ...base.filter((_, i) => moving[i] === m).map((s) => s.layers[s.layers.length - 1]));
+    // A folded-over flap lands upside down on top of the stack that stays.
+    // Folding in thirds moves a third, not a half, so count the actual stacks.
+    const keptTop = top(false);
+    const movingTop = top(true);
+    base.forEach((s, i) => {
       const layer = s.layers[s.layers.length - 1];
-      // A folded-over flap lands on top of what stays, upside down.
-      s.layers.push(moving ? 2 * height - 1 - layer : layer);
-      if (moving) s.folded = mul(reflection(a), s.folded);
-    }
-    height *= 2;
+      s.moves.push(moving[i]);
+      s.layers.push(moving[i] ? keptTop + 1 + (movingTop - layer) : layer);
+      if (moving[i]) s.folded = mul(reflection(a), s.folded);
+    });
   }
   return base.map(({ probe: _, ...s }) => s);
 }
@@ -114,6 +125,28 @@ export const SECTORS: readonly Sector[] = buildSectors();
  * +z (the viewer) on its way over, rather than through the table.
  */
 export const FOLD_LIFT: readonly number[] = FOLD_ANGLES.map((a) => -Math.sign(side(a, KEPT_DIRECTION)));
+
+/** The hexagon's circumradius: its corners reach this far from the centre. */
+export const HEXAGON_RADIUS = 0.98;
+
+/**
+ * The slice across the top of the folded wedge (step 6 of the paper guide).
+ * It runs from a hexagon corner on the 105° fold to the middle of a hexagon
+ * side on the 75° fold, square to that fold, so the twelve mirrored layers
+ * open into a regular hexagon.
+ */
+export const TRIM_LINE: readonly [Vec2, Vec2] = [
+  polar(HEXAGON_RADIUS, WEDGE[1]),
+  polar(HEXAGON_RADIUS * Math.cos(30 * DEG), WEDGE[0]),
+];
+
+/** Everything beyond TRIM_LINE, as a cut outline in wedge coordinates. */
+export const TRIM_CUT: readonly Vec2[] = [
+  TRIM_LINE[0],
+  TRIM_LINE[1],
+  polar(3, WEDGE[0] - 20 * DEG),
+  polar(3, WEDGE[1] + 20 * DEG),
+];
 
 /** The inverse of a product of reflections is the same product, reversed; for a 2×2 we just invert. */
 export function invert(m: Mat2): Mat2 {

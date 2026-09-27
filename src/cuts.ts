@@ -18,6 +18,7 @@ export class CutMask {
   readonly texture: THREE.CanvasTexture;
   private readonly ctx: CanvasRenderingContext2D;
   private cuts: Vec2[][] = [];
+  private trimmed: readonly Vec2[] | null = null;
 
   constructor() {
     this.canvas = document.createElement("canvas");
@@ -35,6 +36,18 @@ export class CutMask {
     return this.cuts.length;
   }
 
+  get isTrimmed() {
+    return this.trimmed !== null;
+  }
+
+  /** Slice the top off the folded paper. Kept apart from the cuts, so Undo never brings it back. */
+  trim(outline: readonly Vec2[]) {
+    if (this.trimmed) return;
+    this.trimmed = outline;
+    this.paint(outline);
+    this.texture.needsUpdate = true;
+  }
+
   /** Cut along a closed outline drawn over the folded paper. */
   cut(outline: Vec2[]) {
     if (outline.length < 3) return;
@@ -50,6 +63,7 @@ export class CutMask {
 
   clear() {
     this.cuts = [];
+    this.trimmed = null;
     this.redraw();
   }
 
@@ -58,6 +72,7 @@ export class CutMask {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = "#fff";
     ctx.fillRect(0, 0, MASK_SIZE, MASK_SIZE);
+    if (this.trimmed) this.paint(this.trimmed);
     for (const c of this.cuts) this.paint(c);
     this.texture.needsUpdate = true;
   }
@@ -67,7 +82,7 @@ export class CutMask {
    * to where that sector lies in the flat square and cut only within it, so a
    * cut across a fold opens into the neighbouring sector as its mirror image.
    */
-  private paint(outline: Vec2[]) {
+  private paint(outline: readonly Vec2[]) {
     const { ctx } = this;
     ctx.fillStyle = "#000";
     for (const s of SECTORS) {

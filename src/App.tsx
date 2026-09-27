@@ -4,12 +4,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { CutMask } from "./cuts";
-import type { Vec2 } from "./folds";
+import { TRIM_CUT, TRIM_LINE, type Vec2 } from "./folds";
 import { Paper } from "./Paper";
 import { Snowfall } from "./Snowfall";
 import { randomCuts } from "./randomCuts";
 
-type Stage = "flat" | "folding" | "cutting" | "unfolding" | "open" | "still";
+type Stage = "flat" | "folding" | "trimming" | "cutting" | "unfolding" | "open" | "still";
 
 // The URL can set the scene up directly, for screenshots and for sharing:
 //   ?demo=<seed>   cut a sample pattern (the seed picks which) and unfold it
@@ -24,16 +24,16 @@ const STILL_FOLD = PARAMS.has("fold") ? Math.min(4, Math.max(0, Number(PARAMS.ge
 const FOLD_TIME = 0.9;
 
 /** Where the folded wedge sits, and a camera that frames it head-on for cutting. */
-const WEDGE_CENTRE = new THREE.Vector3(-0.14, 0.7, 0);
+const WEDGE_CENTRE = new THREE.Vector3(0, 0.68, 0);
 const VIEWS = {
   flat: { position: new THREE.Vector3(0, -1.6, 3.6), target: new THREE.Vector3(0, 0, 0) },
-  cutting: { position: new THREE.Vector3(-0.14, 0.7, 1.95), target: WEDGE_CENTRE },
+  cutting: { position: new THREE.Vector3(0, 0.68, 2.25), target: WEDGE_CENTRE },
   open: { position: new THREE.Vector3(0.4, -0.6, 3.4), target: new THREE.Vector3(0, 0, 0) },
 };
 
 function viewFor(stage: Stage) {
   if (stage === "still") return STILL_FOLD! >= 3.5 ? VIEWS.cutting : VIEWS.open;
-  if (stage === "cutting" || stage === "folding") return VIEWS.cutting;
+  if (stage === "cutting" || stage === "folding" || stage === "trimming") return VIEWS.cutting;
   if (stage === "open" || stage === "unfolding") return VIEWS.open;
   return VIEWS.flat;
 }
@@ -134,6 +134,14 @@ function CuttingBoard({ onCut }: { onCut: (outline: Vec2[]) => void }) {
   );
 }
 
+/** The dashed line across the top of the folded paper, where the trim goes. */
+function TrimGuide() {
+  const [p, q] = TRIM_LINE;
+  const d = [q[0] - p[0], q[1] - p[1]];
+  const ends = [-0.12, 1.12].map((t) => [p[0] + d[0] * t, p[1] + d[1] * t, 0.07] as [number, number, number]);
+  return <Line points={ends} color="#e2483d" lineWidth={2.5} dashed dashSize={0.025} gapSize={0.015} />;
+}
+
 /** A gentle sway once the snowflake is open, as if it hung on a thread. */
 function Sway({ active, children }: { active: boolean; children: React.ReactNode }) {
   const group = useRef<THREE.Group>(null);
@@ -151,11 +159,15 @@ function Sway({ active, children }: { active: boolean; children: React.ReactNode
 }
 
 const COPY: Record<Stage, { title: string; body: string }> = {
-  flat: { title: "A square of paper", body: "Fold it diagonally, then in half three more times." },
-  folding: { title: "Folding…", body: "Four folds, sixteen layers." },
+  flat: { title: "A square of paper", body: "Fold it corner to corner, in half, then in thirds." },
+  folding: { title: "Folding…", body: "Corner to corner, in half, then in thirds: twelve layers." },
+  trimming: {
+    title: "Trim the top",
+    body: "Slice straight across the top of the folded paper, along the dashed line. That is what opens into a hexagon instead of a square.",
+  },
   cutting: {
     title: "Cut",
-    body: "Draw a closed shape across the folded paper. Wherever it overlaps the paper, the scissors cut through all sixteen layers.",
+    body: "Draw a closed shape across the folded paper. Wherever it overlaps the paper, the scissors cut through all twelve layers.",
   },
   unfolding: { title: "Unfolding…", body: "" },
   still: { title: "Paper snowflake", body: "" },
@@ -169,10 +181,11 @@ export function App() {
   const fold = useRef(0);
   const controls = useRef<OrbitControlsImpl>(null);
 
-  const foldTarget = stage === "folding" || stage === "cutting" ? 4 : stage === "unfolding" ? 0 : fold.current;
+  const foldTarget = stage === "folding" || stage === "trimming" || stage === "cutting" ? 4 : stage === "unfolding" ? 0 : fold.current;
 
   useEffect(() => {
     if (DEMO !== null && mask.count === 0) {
+      mask.trim(TRIM_CUT);
       for (const c of randomCuts(Number(DEMO) || 3)) mask.cut(c);
       setCuts(mask.count);
     }
@@ -186,7 +199,7 @@ export function App() {
   }, [mask]);
 
   const onArrive = () => {
-    setStage((s) => (s === "folding" ? "cutting" : s === "unfolding" ? "open" : s));
+    setStage((s) => (s === "folding" ? (mask.isTrimmed ? "cutting" : "trimming") : s === "unfolding" ? "open" : s));
   };
 
   const copy = COPY[stage];
@@ -220,6 +233,7 @@ export function App() {
         <Sway active={stage === "open"}>
           <Paper fold={fold} mask={mask.texture} creased={stage !== "flat" && !(stage === "still" && cuts === 0)} />
         </Sway>
+        {stage === "trimming" && <TrimGuide />}
         {stage === "cutting" && (
           <CuttingBoard
             onCut={(outline) => {
@@ -246,6 +260,16 @@ export function App() {
         {copy.body && <p>{copy.body}</p>}
         <div className="actions">
           {stage === "flat" && <button onClick={() => setStage("folding")}>Fold</button>}
+          {stage === "trimming" && (
+            <button
+              onClick={() => {
+                mask.trim(TRIM_CUT);
+                setStage("cutting");
+              }}
+            >
+              Trim
+            </button>
+          )}
           {stage === "cutting" && (
             <>
               <button disabled={cuts === 0} onClick={() => setStage("unfolding")}>
