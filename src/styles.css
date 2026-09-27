@@ -81,3 +81,34 @@ button:disabled { opacity: 0.4; cursor: default; }
   .tools { display: flex; }
   .tools .tool { flex: 1; min-height: 38px; }
 }
+.papers { display: flex; align-items: center; gap: 8px; margin: 0 0 14px; }
+.papers-label, .papers-name { color: var(--muted); font-size: 14px; }
+.swatches { display: flex; }
+/* Each swatch is a 36px target around a 26px dot of the paper's colour. */
+.swatches .swatch {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+}
+.swatches .swatch::before {
+  content: "";
+  position: absolute;
+  inset: 5px;
+  border-radius: 50%;
+  background: var(--swatch);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+.swatches .swatch.on::before { box-shadow: 0 0 0 2px #1b2440, 0 0 0 4px var(--accent); }
+@media (max-width: 520px) {
+  .papers { margin-bottom: 10px; }
+  .swatches .swatch { width: 42px; height: 42px; min-height: 0; padding: 0; }
+  .swatches .swatch::before { inset: 7px; }
+}
+@media (max-width: 520px) {
+  .papers-label { display: none; }
+}

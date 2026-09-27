@@ -12,6 +12,7 @@ import { Snowfall } from "./Snowfall";
 import { Stroke } from "./Stroke";
 import { webgpu } from "./gpu";
 import { randomCuts } from "./randomCuts";
+import { PAPER_COLOURS, paperColour } from "./paperColours";
 
 type Stage = "flat" | "folding" | "trimming" | "cutting" | "unfolding" | "open" | "still";
 
@@ -22,6 +23,8 @@ const PARAMS = new URLSearchParams(location.search);
 const DEMO = PARAMS.get("demo");
 //   &lite          skip shadows and antialiasing (software renderers, slow GPUs)
 const LITE = PARAMS.has("lite");
+//   &paper=<id>    start on that colour of paper (see paperColours.ts)
+const START_COLOUR = paperColour(PARAMS.get("paper"));
 const STILL_FOLD = PARAMS.has("fold") ? Math.min(4, Math.max(0, Number(PARAMS.get("fold")))) : null;
 
 /** Seconds per fold. */
@@ -225,6 +228,7 @@ export function App() {
   /** How many folds the paper is heading for, 0 to 4. */
   const [folds, setFolds] = useState(0);
   const [tool, setTool] = useState<CutTool>("freehand");
+  const [colour, setColour] = useState(START_COLOUR);
   const [anchors, setAnchors] = useState<Anchor[]>([]);
   const fold = useRef(0);
   const controls = useRef<OrbitControlsImpl>(null);
@@ -306,7 +310,12 @@ export function App() {
         <directionalLight position={[-1, 1.5, -3]} intensity={1.4} color="#ffd7a1" />
 
         <Sway active={stage === "open"}>
-          <Paper fold={fold} mask={mask.texture} creased={stage !== "flat" && !(stage === "still" && cuts === 0)} />
+          <Paper
+            fold={fold}
+            mask={mask.texture}
+            creased={stage !== "flat" && !(stage === "still" && cuts === 0)}
+            colour={colour.hex}
+          />
         </Sway>
         {stage === "trimming" && <TrimGuide />}
         {stage === "cutting" && (
@@ -342,6 +351,26 @@ export function App() {
         )}
         <h1>{copy.title}</h1>
         {copy.body && <p>{copy.body}</p>}
+        {stage === "flat" && folds === 0 && (
+          <div className="papers">
+            <span className="papers-label">Paper</span>
+            <div className="swatches" role="radiogroup" aria-label="Paper colour">
+              {PAPER_COLOURS.map((c) => (
+                <button
+                  key={c.id}
+                  role="radio"
+                  aria-checked={colour.id === c.id}
+                  aria-label={c.name}
+                  title={c.name}
+                  className={colour.id === c.id ? "swatch on" : "swatch"}
+                  style={{ "--swatch": c.hex } as React.CSSProperties}
+                  onClick={() => setColour(c)}
+                />
+              ))}
+            </div>
+            <span className="papers-name">{colour.name}</span>
+          </div>
+        )}
         {stage === "cutting" && (
           <>
             <div className="tools" role="radiogroup" aria-label="Scissors">
