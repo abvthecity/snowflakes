@@ -5,7 +5,7 @@ import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { CutMask } from "./cuts";
 import { CuttingBoard, NO_PATH, type CutPath } from "./CuttingBoard";
-import { TRIM_CUT, TRIM_LINE } from "./folds";
+import { FOLD_METHODS, TRIM_CUT, TRIM_LINE, foldMethod, type FoldMethod } from "./folds";
 import { outline, type Anchor } from "./penPath";
 import type { Vec2 } from "./folds";
 import { CutPreview } from "./CutPreview";
@@ -23,7 +23,9 @@ type Stage = "flat" | "folding" | "trimming" | "cutting" | "unfolding" | "open" 
 // The URL can set the scene up directly, for screenshots and for sharing:
 //   ?demo=<seed>   cut a sample pattern (the seed picks which) and unfold it
 //   &fold=<0–4>    hold the paper at that point of folding instead
+//   ?method=<id>   fold it this way (see FOLD_METHODS): diagonal or half
 const PARAMS = new URLSearchParams(location.search);
+const START_METHOD = foldMethod(PARAMS.get("method"));
 const DEMO = PARAMS.get("demo");
 //   &lite          skip shadows and antialiasing (software renderers, slow GPUs)
 const LITE = PARAMS.has("lite");
@@ -51,9 +53,11 @@ interface View {
   target: THREE.Vector3;
   fit: readonly [number, number];
 }
-const VIEWS: Record<"flat" | "folded" | "cutting" | "open", View> = {
+const VIEWS: Record<"flat" | "folded" | "halved" | "cutting" | "open", View> = {
   flat: { position: new THREE.Vector3(0, -1.6, 3.6), target: new THREE.Vector3(0, 0, 0), fit: [1.35, 1.2] },
   folded: { position: new THREE.Vector3(0, -0.5, 3.1), target: new THREE.Vector3(0, 0.35, 0), fit: [1.1, 0.85] },
+  // Folded in half first, the paper sits above its folded edge and reaches higher.
+  halved: { position: new THREE.Vector3(0, -0.2, 3.1), target: new THREE.Vector3(0, 0.62, 0), fit: [1.1, 0.85] },
   cutting: { position: new THREE.Vector3(0, 0.68, 2.25), target: WEDGE_CENTRE, fit: [0.45, 0.78] },
   open: { position: new THREE.Vector3(0.4, -0.6, 3.4), target: new THREE.Vector3(0, 0, 0), fit: [1.1, 1.1] },
 };
@@ -61,13 +65,14 @@ const VIEWS: Record<"flat" | "folded" | "cutting" | "open", View> = {
 /** Half the camera's vertical field of view, in radians. */
 const HALF_FOV = (40 / 2) * (Math.PI / 180);
 
-function viewFor(stage: Stage, folds: number) {
-  if (stage === "still") return STILL_FOLD! >= 3.5 ? VIEWS.cutting : VIEWS.open;
+function viewFor(stage: Stage, folds: number, method: FoldMethod) {
+  const folded = method.foldedView === "halved" ? VIEWS.halved : VIEWS.folded;
+  if (stage === "still") return STILL_FOLD! >= 3.5 ? VIEWS.cutting : STILL_FOLD! >= 1 ? folded : VIEWS.open;
   if (stage === "cutting" || stage === "trimming") return VIEWS.cutting;
   if (stage === "open" || stage === "unfolding") return VIEWS.open;
-  // While folding, frame the paper as it shrinks: whole sheet, triangle, wedge.
-  if (folds >= 3) return VIEWS.cutting;
-  if (folds >= 1) return VIEWS.folded;
+  // While folding, frame the paper as it shrinks: whole sheet, half, wedge.
+  if (folds >= method.narrowAt) return VIEWS.cutting;
+  if (folds >= 1) return folded;
   return VIEWS.flat;
 }
 
@@ -75,11 +80,13 @@ function viewFor(stage: Stage, folds: number) {
 function CameraRig({
   stage,
   folds,
+  method,
   controls,
   panel,
 }: {
   stage: Stage;
   folds: number;
+  method: FoldMethod;
   controls: React.RefObject<OrbitControlsImpl | null>;
   panel: React.RefObject<HTMLElement | null>;
 }) {
@@ -112,7 +119,7 @@ function CameraRig({
     }
 
     if (!moving.current || !c) return;
-    const view = viewFor(stage, folds);
+    const view = viewFor(stage, folds, method);
     // Back off until the content fits in the space the panel leaves free.
     const across = view.fit[0] / (Math.tan(HALF_FOV) * cam.aspect * Math.max(0.3, 1 - right / size.width));
     const up = view.fit[1] / (Math.tan(HALF_FOV) * Math.max(0.3, 1 - below / size.height));
@@ -320,21 +327,8 @@ function DragTurn({
   return <group ref={group}>{children}</group>;
 }
 
-/** The four folds, one step each, in the order of the paper guide. */
-const FOLD_STEPS = [
-  {
-    title: "Fold corner to corner",
-    body: "Start with a square of paper. Bring the bottom right corner up to the top left one, making a triangle.",
-  },
-  { title: "Fold in half", body: "Fold the triangle in half, bringing its two sharp corners together." },
-  { title: "Fold one side across", body: "From the point at the bottom, fold the left side over by a third." },
-  {
-    title: "Fold the other side across",
-    body: "Fold the right side over on top, so the paper makes a narrow cone twelve layers thick.",
-  },
-];
-
-const STEP_COUNT = FOLD_STEPS.length + 3;
+/** Four folds, then the trim, the cuts, and unfolding. */
+const STEP_COUNT = 4 + 3;
 
 /** What the scissors do next, by where the shape is at. */
 const CUT_HINTS = {
@@ -344,8 +338,7 @@ const CUT_HINTS = {
   closed: "Drag a point or its blue handles to reshape the cut, tap a point to round or sharpen it, or start the next cut anywhere.",
 };
 
-const COPY: Record<Stage, { title: string; body: string }> = {
-  flat: FOLD_STEPS[0],
+const COPY: Record<Exclude<Stage, "flat">, { title: string; body: string }> = {
   folding: { title: "", body: "" },
   trimming: {
     title: "Trim the top",
@@ -372,7 +365,7 @@ export function App() {
   const mask = useMemo(() => new CutMask(), []);
   const recorder = useMemo(() => {
     const r = new Recorder();
-    r.reset(paperChoice(START_COLOUR));
+    r.reset(paperChoice(START_COLOUR), START_METHOD.id);
     return r;
   }, []);
   const [stage, setStage] = useState<Stage>("flat");
@@ -389,10 +382,15 @@ export function App() {
   /** The cut being drawn (or reshaped) in a replay, and whether it has closed. */
   const [ghost, setGhost] = useState<{ points: Vec2[]; closed: boolean }>({ points: [], closed: false });
   const [colour, setColour] = useState(START_COLOUR);
-  /** Colours are picked before the first fold, so the recording starts on that paper. */
+  const [method, setMethod] = useState<FoldMethod>(START_METHOD);
+  /** Colour and way of folding are picked before the first fold, so the recording starts with them. */
   const pickColour = (c: PaperColour) => {
     setColour(c);
     recorder.paper = paperChoice(c);
+  };
+  const pickMethod = (m: FoldMethod) => {
+    setMethod(m);
+    recorder.fold = m.id;
   };
   const fold = useRef(0);
   const foldSpeed = useRef(1);
@@ -406,6 +404,8 @@ export function App() {
 
   const foldTarget =
     stage === "folding" || stage === "trimming" || stage === "cutting" ? folds : stage === "unfolding" ? 0 : fold.current;
+
+  mask.setMethod(method);
 
   useEffect(() => {
     if (DEMO !== null && mask.count === 0) {
@@ -434,12 +434,14 @@ export function App() {
         return;
       }
       const paper = finalPaper(recording.events);
+      mask.setMethod(foldMethod(recording.fold));
       mask.clear();
       if (paper.trimmed) mask.trim(TRIM_CUT);
       for (const c of paper.cuts) mask.cut(c);
       setCuts(mask.count);
       recorder.resume(recording);
       setColour(paperColour(paperColorId(recording.paper)));
+      setMethod(foldMethod(recording.fold));
       setSave({ state: "saved", id: SHARED });
       setShared(true);
       setOpening(null);
@@ -456,7 +458,7 @@ export function App() {
     setStage((s) => {
       if (s === "unfolding") return "open";
       if (s !== "folding") return s;
-      if (folds < FOLD_STEPS.length) return "flat";
+      if (folds < method.steps.length) return "flat";
       return mask.isTrimmed ? "cutting" : "trimming";
     });
     for (const done of arrivals.current.splice(0)) done();
@@ -492,7 +494,7 @@ export function App() {
         setStage("unfolding");
         break;
       case "refold":
-        setFolds(FOLD_STEPS.length);
+        setFolds(method.steps.length);
         setStage("folding");
         break;
     }
@@ -522,6 +524,7 @@ export function App() {
     foldSpeed.current = 1;
     setReplaying(true);
     setColour(paperColour(paperColorId(recording.paper)));
+    setMethod(foldMethod(recording.fold));
     newPaper();
     const wait = async (ms: number) => {
       if (!skip.current) await sleep(ms);
@@ -611,12 +614,14 @@ export function App() {
       ? { title: "Opening a snowflake…", body: "" }
       : { title: "Snowflake not found", body: "That link doesn't lead to a saved snowflake. Fold a new one here instead." }
     : replaying
-      ? { title: "Replaying…", body: stage === "flat" ? (FOLD_STEPS[folds]?.body ?? "") : COPY[stage].body }
+      ? { title: "Replaying…", body: stage === "flat" ? (method.steps[folds]?.body ?? "") : COPY[stage].body }
       : shown.stage === "flat"
-        ? FOLD_STEPS[shown.folds]
+        ? method.steps[shown.folds]
         : shown.stage === "open" && shared
           ? { title: "A paper snowflake", body: "Someone cut this one. Replay it, or fold it back up to keep cutting." }
           : COPY[shown.stage];
+  // The way to fold, and the paper, can change until the first fold is made.
+  const choosing = shown.stage === "flat" && shown.folds === 0 && !replaying && !opening;
   const step =
     opening || replaying
       ? null
@@ -670,6 +675,7 @@ export function App() {
         <DragTurn enabled={stage === "flat" || stage === "open" || stage === "still"} controls={controls} held={held}>
           <Sway active={stage === "open"} held={held}>
             <Paper
+              method={method}
               fold={fold}
               mask={mask.texture}
               creased={stage !== "flat" && !(stage === "still" && cuts === 0)}
@@ -708,7 +714,7 @@ export function App() {
         <Ready />
 
         <FoldDriver fold={fold} target={foldTarget} speed={foldSpeed} onArrive={onArrive} />
-        <CameraRig stage={stage} folds={folds} controls={controls} panel={panel} />
+        <CameraRig stage={stage} folds={folds} method={method} controls={controls} panel={panel} />
         <OrbitControls
           ref={controls}
           enabled={stage === "flat" || stage === "open" || stage === "still"}
@@ -724,7 +730,22 @@ export function App() {
         <h1>{copy.title}</h1>
         <div className="body">
           {copy.body && <p>{copy.body}</p>}
-          {shown.stage === "flat" && shown.folds === 0 && !replaying && !opening && (
+          {choosing && (
+            <div className="segmented" role="radiogroup" aria-label="Way to fold">
+              {FOLD_METHODS.map((m) => (
+                <button
+                  key={m.id}
+                  role="radio"
+                  aria-checked={method === m}
+                  className={method === m ? "on" : undefined}
+                  onClick={() => pickMethod(m)}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+          )}
+          {choosing && (
             <div className="papers">
               <span className="papers-label">Paper</span>
               <div className="swatches" role="radiogroup" aria-label="Paper colour">
@@ -836,7 +857,7 @@ export function App() {
                   <button
                     className="quiet"
                     onClick={() => {
-                      recorder.reset(paperChoice(colour));
+                      recorder.reset(paperChoice(colour), method.id);
                       setSave({ state: "idle" });
                       setShared(false);
                       if (SHARED || save.state === "saved") history.replaceState(null, "", location.pathname);
