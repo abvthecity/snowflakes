@@ -662,22 +662,26 @@ export function App() {
         camera={{ position: VIEWS.flat.position.toArray(), fov: 40, near: 0.05, far: 50 }}
       >
         <Environment resolution={256}>
-          <Lightformer form="rect" intensity={2.2} color="#dbe8ff" position={[0, 3, 4]} scale={[6, 3, 1]} />
+          <Lightformer form="rect" intensity={2.0} color="#dbe8ff" position={[0, 3, 4]} scale={[6, 3, 1]} />
           <Lightformer form="rect" intensity={1.2} color="#ffe6c7" position={[-4, 1, 1]} rotation-y={Math.PI / 2} scale={[4, 4, 1]} />
           <Lightformer form="ring" intensity={3} color="#ffffff" position={[3, 2, 3]} scale={1.5} />
         </Environment>
-        <ambientLight intensity={0.1} />
+        {/* A soft, even fill, so paper turned from the key light stays light. */}
+        <hemisphereLight args={["#ffffff", "#e8ecf5", 1.3]} />
         <directionalLight
           position={[-2.2, 2.6, 3.2]}
-          intensity={2.6}
-          color="#fff6ea"
+          intensity={2.0}
+          color="#fffaf3"
           castShadow
           shadow-mapSize={[2048, 2048]}
           shadow-bias={-0.0004}
           shadow-normalBias={0.002}
-          shadow-radius={3}
+          shadow-radius={6}
+          // Only a light shade: enough to tell a raised flap from the layer
+          // under it, never a dark patch.
+          shadow-intensity={0.35}
           // Fit the shadow map to the paper, so a flap standing a little
-          // open casts a crisp shadow on the layer under it.
+          // open casts its shadow on the layer under it.
           shadow-camera-left={-1.6}
           shadow-camera-right={1.6}
           shadow-camera-top={1.6}
@@ -686,7 +690,7 @@ export function App() {
           shadow-camera-far={9}
         />
         {/* Behind the paper: what shines through it. */}
-        <directionalLight position={[-1, 1.5, -3]} intensity={1.4} color="#ffd7a1" />
+        <directionalLight position={[-1, 1.5, -3]} intensity={1.2} color="#fff1e2" />
 
         <DragTurn enabled={stage === "flat" || stage === "open" || stage === "still"} controls={controls} held={held}>
           <Sway active={stage === "open"} held={held}>

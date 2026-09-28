@@ -80,9 +80,10 @@ export fn paperSurface(p: vec2f, footprint: f32, crease: f32, facing: f32, start
   let fibres = fibreLayer(p, 55.0, 1.0, footprint) * 0.7 + fibreLayer(p, 130.0, 2.0, footprint) * 0.45;
   // The finest grain only where a pixel is small enough to resolve it.
   let pulp = simplex2d(p * 420.0) * 0.25 * (1.0 - smoothstep(0.6, 1.5, footprint * 420.0));
-  // Heights in sheet units (10 cm): fibres stand some 25 µm proud, about
-  // what a sheet of copy paper's roughness comes to.
-  var height = (fibres + pulp) * 0.00025 + formation * 0.00005;
+  // Heights in sheet units (10 cm). Kept to a few microns, well under real
+  // copy paper's roughness, so the sheet reads smooth and clean with only a
+  // hint of tooth where the light grazes it.
+  var height = (fibres + pulp) * 0.00004;
 
   // A crease is a narrow, rounded ridge or furrow in the sheet. Keep its
   // slope, not its height, as it widens to at least a pixel or so.
@@ -94,6 +95,7 @@ export fn paperSurface(p: vec2f, footprint: f32, crease: f32, facing: f32, start
   height = height + nearest.y * profile * width * 0.6 * crease * reach;
   let shade = profile * crease * reach * select(0.35, 1.0, nearest.y < 0.0);
 
-  let albedo = 1.0 + (fibres * 0.025 + pulp * 0.03) - (formation - 0.5) * 0.035;
+  // An even colour: the grain shows only in how it catches the light.
+  let albedo = 1.0 + fibres * 0.004;
   return vec4f(height, formation, albedo, shade);
 }
