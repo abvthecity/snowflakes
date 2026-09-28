@@ -12,7 +12,6 @@ import {
   float,
   fwidth,
   length,
-  max,
   mix,
   normalView,
   positionView,
@@ -20,12 +19,11 @@ import {
   texture,
   uniform,
   uv,
-  vec2,
   vec3,
 } from "three/tsl";
 import { tslExports } from "vgpu/three";
 import paperModule from "./paper.wgsl";
-import { CONTACT_SHADE, EDGE_SHADE } from "./paperShading";
+import { CONTACT_SHADE, CURL_SHADE } from "./paperShading";
 
 type PaperExports = {
   paperSurface: { p: Node; footprint: Node; crease: Node | number; facing: Node; start: Node };
@@ -103,7 +101,7 @@ export function createPaperNodeMaterial(mask: THREE.Texture): PaperNodeMaterial 
     contact4,
     contact5,
   });
-  const height = surface.x.add(folding.x);
+  const height = surface.x;
   const formation = surface.y;
   const albedo = surface.z;
   const shade = surface.w;
@@ -114,25 +112,11 @@ export function createPaperNodeMaterial(mask: THREE.Texture): PaperNodeMaterial 
   material.opacityNode = cut;
   material.alphaTestNode = float(0.5).sub(fwidth(cut).mul(0.5));
 
-  // The sheet's edges, cut or square, show as a fine darker line, as a paper
-  // edge does lying on paper: the layer under it is the same colour, so the
-  // line is what tells where one ends. A few taps of the mask around the
-  // point tell how near a cut is.
-  const reach = max(float(0.0025), footprint.mul(1.2));
-  const tap = reach.mul(0.5);
-  const inside = texture(mask, uv().add(vec2(tap, 0)))
-    .r.add(texture(mask, uv().sub(vec2(tap, 0))).r)
-    .add(texture(mask, uv().add(vec2(0, tap))).r)
-    .add(texture(mask, uv().sub(vec2(0, tap))).r)
-    .mul(0.25);
-  const toSquare = float(1).sub(max(abs(p.x), abs(p.y))).div(reach).clamp();
-  const edge = max(float(1).sub(inside).mul(2).clamp(), float(1).sub(toSquare));
-
   // The sheet's colour, mottled by the pulp; creases hold a little shadow in their furrows.
   material.colorNode = tint
     .mul(albedo)
     .mul(float(1).sub(shade.mul(0.07)))
-    .mul(float(1).sub(edge.mul(EDGE_SHADE)))
+    .mul(float(1).sub(folding.x.mul(CURL_SHADE)))
     .mul(float(1).sub(folding.y.mul(CONTACT_SHADE)));
   material.roughnessNode = float(0.8).add(formation.mul(0.12));
   material.sheen = 0.3;

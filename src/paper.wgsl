@@ -100,17 +100,17 @@ export fn paperSurface(p: vec2f, footprint: f32, crease: f32, facing: f32, start
 
 /**
  * What shows where the paper is folded over on itself, at `p`:
- *   x  the height of the roll (along the sheet's front) where the paper turns
- *      back on itself: it doesn't fold on a knife edge but rolls round in a
- *      tight curve, which catches the light on one side and falls into shade
- *      on the other
- *   y  a soft contact shadow, 0 to 1, where the rolled edge of a flap lies on
+ *   x  0 to 1, how far into the curl of a flap's folded edge: paper doesn't
+ *      fold on a knife edge but turns round in a tight curve, a little
+ *      darker as it turns away
+ *   y  0 to 1, a soft contact shadow where the folded edge of a flap lies on
  *      this layer
  *
  * Crease k runs from the centre at `start` + k·30°, between sectors k - 1
  * and k. `folds` holds, for crease k, component k % 4 of vector k / 4: how
  * far it is folded, 0 open to 1 flat back on itself, signed by the side it
- * folds toward (+1 the front). `contact` holds, for sector i, entry 2i for
+ * folds toward (+1 the front); Paper.tsx zeroes the folds that don't lie
+ * on paper. `contact` holds, for sector i, entry 2i for
  * the flap edge lying along its crease i and 2i + 1 for crease i + 1: how
  * strongly it shades this sector, signed by the side the flap lies on.
  * `facing` is 1 on the front of the sheet and -1 on the back. Both keep at
@@ -146,17 +146,19 @@ export fn foldShading(
   let toNear = r * sin(offset);
   let toFar = r * sin(CREASE_STEP - offset);
 
-  let roll = max(0.014, footprint * 4.0);
-  let rollNear = 1.0 - clamp(toNear / roll, 0.0, 1.0);
-  let rollFar = 1.0 - clamp(toFar / roll, 0.0, 1.0);
-  // Every fold meets at the centre; fade the roll out there rather than let them pile up.
+  // Every fold meets at the centre; fade out there rather than let them pile up.
   let reach = smoothstep(0.01, 0.08, r);
-  let height = roll * reach * (folds[k] * rollNear * rollNear + folds[(k + 1) % 12] * rollFar * rollFar);
+  // Smooth ramps of colour only, with no bump: those alias into jagged lines.
+  let curlWidth = max(0.008, footprint * 2.5);
+  let curl = reach * max(
+    abs(folds[k]) * (1.0 - smoothstep(0.0, curlWidth, toNear)),
+    abs(folds[(k + 1) % 12]) * (1.0 - smoothstep(0.0, curlWidth, toFar)),
+  );
 
   let pair = select(contacts[k / 2].xy, contacts[k / 2].zw, k % 2 == 1) * facing;
   let spread = max(0.045, footprint * 10.0);
-  let shadowNear = 1.0 - clamp(toNear / spread, 0.0, 1.0);
-  let shadowFar = 1.0 - clamp(toFar / spread, 0.0, 1.0);
-  let shadow = max(max(pair.x, 0.0) * shadowNear * shadowNear, max(pair.y, 0.0) * shadowFar * shadowFar);
-  return vec2f(height, shadow);
+  let shadowNear = 1.0 - smoothstep(0.0, spread, toNear);
+  let shadowFar = 1.0 - smoothstep(0.0, spread, toFar);
+  let shadow = reach * max(max(pair.x, 0.0) * shadowNear * shadowNear, max(pair.y, 0.0) * shadowFar * shadowFar);
+  return vec2f(curl, shadow);
 }

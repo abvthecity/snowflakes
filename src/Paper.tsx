@@ -123,6 +123,8 @@ export function Paper({
   // Where each sector's creases and middle are, as the folds carry them.
   const sectorFrames = useMemo(() => method.sectors.map((s) => new SectorFrame(creaseStart, s.index)), [method, creaseStart]);
   const folds = useMemo(() => new Array<number>(SECTOR_COUNT).fill(0), []);
+  /** How surely each crease is a flap's edge lying on paper, 0 to 1. */
+  const overPaper = useMemo(() => new Array<number>(SECTOR_COUNT).fill(0), []);
   const crease = useRef(0);
 
   useFrame(({ camera }, dt) => {
@@ -183,8 +185,7 @@ export function Paper({
 
     // How far each crease is folded: 0 while its two sectors lie flat, 1 once
     // one is folded right back onto the other, signed by the side of the
-    // sector it folds toward. The paper rolls round each fold (foldShading in
-    // paper.wgsl), so a fold still shows once the layers lie flat together.
+    // sector it folds toward.
     const matrices = sectors.current.map((sector) => sector?.turn.matrix);
     if (matrices.some((m) => !m)) return;
     const frames = sectorFrames.map((f, i) => f.place(matrices[i]!));
@@ -193,11 +194,13 @@ export function Paper({
       const b = frames[k];
       const folded = (1 - a.normal.dot(b.normal)) / 2;
       folds[k] = folded * Math.sign(scratch.across.subVectors(b.mid, a.centre).dot(a.normal));
-      material.folds[k >> 2].value.setComponent(k & 3, folds[k]);
+      overPaper[k] = 0;
     }
-    // Where a flap has been folded over so that its rolled edge lies along a
-    // crease of a layer beneath, it shades that layer beside it, on the side
-    // it doesn't cover: the step from one layer to the next.
+    // Shading only goes where a flap has been folded over onto paper: where
+    // its folded edge lies along a crease of a layer beneath, and that layer
+    // carries on past it. The layer takes a soft shadow beside the edge, on
+    // the side the flap doesn't cover, and the flap darkens a little as it curls. Folds
+    // at the outside of the stack, with nothing beyond them, stay plain.
     frames.forEach((s, i) => {
       s.creases.forEach((line, j) => {
         let shade = 0;
@@ -205,18 +208,25 @@ export function Paper({
         frames.forEach((t, ti) => {
           if (ti === i) return;
           t.creases.forEach((edge, ej) => {
-            const folded = Math.abs(folds[(ti + ej) % SECTOR_COUNT]);
-            const along = THREE.MathUtils.smoothstep(line.dot(edge), 0.995, 1);
-            if (folded * along <= Math.abs(shade)) return;
+            const k = (ti + ej) % SECTOR_COUNT;
+            // Fades in smoothly as the flap settles, so it never pops.
+            const settled = THREE.MathUtils.smoothstep(Math.abs(folds[k]), 0.9, 1);
+            const along = THREE.MathUtils.smoothstep(line.dot(edge), 0.985, 0.9995);
+            const weight = settled * along;
+            if (weight === 0) return;
             // The flap must lie across the line from this sector, not on top of it.
             if (scratch.at.crossVectors(line, t.mid).dot(s.normal) * own >= 0) return;
+            overPaper[k] = Math.max(overPaper[k], weight);
+            if (weight <= Math.abs(shade)) return;
             const side = scratch.other.subVectors(t.mid, s.mid).dot(s.normal);
-            shade = folded * along * Math.sign(side);
+            if (Math.abs(side) < 1e-6) return;
+            shade = weight * Math.sign(side);
           });
         });
         material.contact[i >> 1].value.setComponent((i & 1) * 2 + j, shade);
       });
     });
+    for (let k = 0; k < SECTOR_COUNT; k++) material.folds[k >> 2].value.setComponent(k & 3, folds[k] * overPaper[k]);
   });
 
   return (

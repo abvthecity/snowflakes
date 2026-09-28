@@ -2,7 +2,7 @@
 // through it from behind. Built on MeshPhysicalMaterial so it takes the
 // scene's image-based lighting, with a small shader patch for translucency.
 import * as THREE from "three";
-import { CONTACT_SHADE, EDGE_SHADE } from "./paperShading";
+import { CONTACT_SHADE, CURL_SHADE } from "./paperShading";
 
 /** A tileable-enough field of short fibres, used as colour and bump. */
 function fibreTexture(size = 1024): THREE.CanvasTexture {
@@ -73,19 +73,19 @@ const FOLD_SHADING = /* glsl */ `
     float toNear = r * sin(offset);
     float toFar = r * sin(STEP - offset);
 
-    float roll = max(0.014, footprint * 4.0);
-    float rollNear = 1.0 - clamp(toNear / roll, 0.0, 1.0);
-    float rollFar = 1.0 - clamp(toFar / roll, 0.0, 1.0);
     float reach = smoothstep(0.01, 0.08, r);
-    float height = roll * reach * (folds[k / 4][k % 4] * rollNear * rollNear + folds[n / 4][n % 4] * rollFar * rollFar);
+    float curlWidth = max(0.008, footprint * 2.5);
+    float curl = reach * max(
+      abs(folds[k / 4][k % 4]) * (1.0 - smoothstep(0.0, curlWidth, toNear)),
+      abs(folds[n / 4][n % 4]) * (1.0 - smoothstep(0.0, curlWidth, toFar)));
 
     vec4 pairs = contact[k / 2];
     vec2 pair = (k % 2 == 1 ? pairs.zw : pairs.xy) * facing;
     float spread = max(0.045, footprint * 10.0);
-    float shadowNear = 1.0 - clamp(toNear / spread, 0.0, 1.0);
-    float shadowFar = 1.0 - clamp(toFar / spread, 0.0, 1.0);
-    float shadow = max(max(pair.x, 0.0) * shadowNear * shadowNear, max(pair.y, 0.0) * shadowFar * shadowFar);
-    return vec2(height, shadow);
+    float shadowNear = 1.0 - smoothstep(0.0, spread, toNear);
+    float shadowFar = 1.0 - smoothstep(0.0, spread, toFar);
+    float shadow = reach * max(max(pair.x, 0.0) * shadowNear * shadowNear, max(pair.y, 0.0) * shadowFar * shadowFar);
+    return vec2(curl, shadow);
   }`;
 
 export function createPaperMaterial(mask: THREE.Texture): WebGLPaperMaterial {
@@ -132,33 +132,10 @@ export function createPaperMaterial(mask: THREE.Texture): WebGLPaperMaterial {
           vec4 sampledDiffuseColor = texture2D( map, vMapUv );
           diffuseColor.rgb *= mix( vec3( 0.93 ), vec3( 1.04 ), sampledDiffuseColor.r );
         #endif
-        // A fine darker line along the sheet's edges, cut or square (as in paperNodeMaterial.ts).
         vec2 sheetP = vAlphaMapUv * 2.0 - 1.0;
         float sheetFootprint = length( fwidth( sheetP ) );
-        float edgeReach = max( 0.0025, sheetFootprint * 1.2 );
-        float edgeTap = edgeReach * 0.5;
-        float inside = 0.25 * (
-          texture2D( alphaMap, vAlphaMapUv + vec2( edgeTap, 0.0 ) ).g + texture2D( alphaMap, vAlphaMapUv - vec2( edgeTap, 0.0 ) ).g
-          + texture2D( alphaMap, vAlphaMapUv + vec2( 0.0, edgeTap ) ).g + texture2D( alphaMap, vAlphaMapUv - vec2( 0.0, edgeTap ) ).g );
-        float toSquare = clamp( ( 1.0 - max( abs( sheetP.x ), abs( sheetP.y ) ) ) / edgeReach, 0.0, 1.0 );
-        float edge = max( clamp( 2.0 * ( 1.0 - inside ), 0.0, 1.0 ), 1.0 - toSquare );
         vec2 folding = foldShading( sheetP, sheetFootprint, gl_FrontFacing ? 1.0 : - 1.0 );
-        diffuseColor.rgb *= ( 1.0 - edge * ${EDGE_SHADE.toFixed(3)} ) * ( 1.0 - folding.y * ${CONTACT_SHADE.toFixed(3)} );`,
-      )
-      // Roll the normal round the folds, in world units as the WebGPU paper does.
-      .replace(
-        "#include <normal_fragment_maps>",
-        `#include <normal_fragment_maps>
-        {
-          float roll = folding.x;
-          vec3 dpdx = dFdx( - vViewPosition );
-          vec3 dpdy = dFdy( - vViewPosition );
-          vec3 r1 = cross( dpdy, normal );
-          vec3 r2 = cross( normal, dpdx );
-          float det = dot( dpdx, r1 ) * faceDirection;
-          vec3 grad = sign( det ) * ( dFdx( roll ) * r1 + dFdy( roll ) * r2 );
-          normal = normalize( abs( det ) * normal - grad );
-        }`,
+        diffuseColor.rgb *= ( 1.0 - folding.x * ${CURL_SHADE.toFixed(3)} ) * ( 1.0 - folding.y * ${CONTACT_SHADE.toFixed(3)} );`,
       )
       // As three does for alpha to coverage, but with the one-pixel ramp
       // centred on the cut rather than starting at it.
