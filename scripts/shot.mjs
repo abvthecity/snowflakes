@@ -9,7 +9,7 @@
 // buttons drive the whole flow.
 import { chromium } from "playwright";
 import { preview } from "vite";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 
 const out = new URL("../shots/", import.meta.url);
 await mkdir(out, { recursive: true });
@@ -204,6 +204,12 @@ try {
   await frames(page, 3);
   await page.screenshot({ path: new URL("9e-severed.png", out).pathname });
   console.log("shots/9e-severed.png");
+  // Reshape that last cut: drag one of its corners down a little (a "recut" in the recording).
+  await page.mouse.move(335, 302);
+  await page.mouse.down();
+  await page.mouse.move(331, 312, { steps: 2 });
+  await page.mouse.move(327, 322, { steps: 2 });
+  await page.mouse.up();
   await page.getByRole("button", { name: "Surprise me" }).click();
   await page.getByRole("button", { name: "Unfold" }).click();
   await check("unfolding");
@@ -212,6 +218,42 @@ try {
   await check("open");
   await page.screenshot({ path: new URL("10-clicked-through.png", out).pathname });
   console.log("shots/10-clicked-through.png");
+
+  // Save it, open the link, and replay how it was made. vite preview has no
+  // Pages Functions, so the API is stood in for here; it keeps what was
+  // posted and serves it back, so the recording makes the round trip.
+  let saved = null;
+  await page.route("**/api/snowflakes", async (route) => {
+    saved = route.request().postDataJSON();
+    await route.fulfill({ status: 201, json: { id: "shot1" } });
+  });
+  await page.getByRole("button", { name: "Save" }).click();
+  const link = await page.getByRole("textbox", { name: "Link to this snowflake" }).inputValue({ timeout: 30_000 });
+  if (!link.endsWith("?s=shot1")) errors.push(`save: link is ${link}`);
+  await writeFile(new URL("recording.json", out), JSON.stringify(saved));
+  if (saved?.fold !== "diagonal") errors.push(`save: fold method is ${saved?.fold}`);
+  const kinds = new Set(saved?.events?.map((e) => e.k));
+  for (const k of ["fold", "trim", "cut", "recut", "unfold"]) if (!kinds.has(k)) errors.push(`save: the recording has no ${k}`);
+  if (!saved?.events?.some((e) => e.k === "cut" && e.tool === "pen" && e.pts.some((v, i) => i % 5 === 2 && v !== 0)))
+    errors.push("save: the recording has no curved pen cut");
+  await page.close();
+
+  const shared = await open("?s=shot1&lite", { width: 900, height: 640 });
+  await shared.route("**/api/snowflakes/shot1", (route) => route.fulfill({ json: { id: "shot1", createdAt: 0, recording: saved } }));
+  await shared.getByRole("button", { name: "Replay" }).click({ timeout: 90_000 });
+  await shared.getByRole("heading", { name: "Replaying…" }).waitFor();
+  // Let it reach the cutting, then catch a cut being drawn again.
+  await shared.getByRole("button", { name: "Skip to the end" }).waitFor();
+  await shared.locator(".app[data-stage=cutting]").waitFor({ timeout: 180_000 });
+  await frames(shared, 4);
+  await shared.screenshot({ path: new URL("10b-replaying.png", out).pathname });
+  console.log("shots/10b-replaying.png");
+  await shared.getByRole("button", { name: "Skip to the end" }).click();
+  await shared.getByRole("button", { name: "Fold back up" }).waitFor({ timeout: 180_000 });
+  await frames(shared, 2);
+  await shared.screenshot({ path: new URL("10c-replayed.png", out).pathname });
+  console.log("shots/10c-replayed.png");
+  await shared.close();
 
   // The same flow on a phone, by touch: taps for the buttons and corners,
   // finger drags for the freehand loop, a curve handle and turning the result.

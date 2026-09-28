@@ -6,13 +6,17 @@ import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { CutMask } from "./cuts";
 import { CuttingBoard, NO_PATH, type CutPath } from "./CuttingBoard";
 import { FOLD_METHODS, TRIM_CUT, TRIM_LINE, foldMethod, type FoldMethod } from "./folds";
-import { outline } from "./penPath";
+import { outline, type Anchor } from "./penPath";
+import type { Vec2 } from "./folds";
+import { CutPreview } from "./CutPreview";
 import { Paper } from "./Paper";
 import { Snowfall } from "./Snowfall";
 import { Stroke } from "./Stroke";
 import { webgpu } from "./gpu";
 import { randomCuts } from "./randomCuts";
-import { PAPER_COLOURS, paperColour } from "./paperColours";
+import { Recorder, paperColorId, cutAnchors, cutShape, drawTime, finalPaper, outlineCut, penCut, type Recording, type Step } from "./timeline";
+import { loadSnowflake, saveSnowflake, shareUrl } from "./api";
+import { PAPER_COLOURS, paperColour, type PaperColour } from "./paperColours";
 
 type Stage = "flat" | "folding" | "trimming" | "cutting" | "unfolding" | "open" | "still";
 
@@ -33,7 +37,12 @@ const LITE = PARAMS.has("lite");
 const MAX_DPR = matchMedia("(pointer: coarse)").matches ? 2 : 3;
 //   &paper=<id>    start on that colour of paper (see paperColours.ts)
 const START_COLOUR = paperColour(PARAMS.get("paper"));
+
+/** How a saved snowflake records its paper: today's paper, in the chosen colour. */
+const paperChoice = (c: PaperColour) => ({ id: "classic", params: { color: c.id } });
 const STILL_FOLD = PARAMS.has("fold") ? Math.min(4, Math.max(0, Number(PARAMS.get("fold")))) : null;
+//   ?s=<id>        open a saved snowflake, which can replay how it was cut
+const SHARED = PARAMS.get("s");
 
 /** Seconds per fold. */
 const FOLD_TIME = 0.9;
@@ -134,13 +143,23 @@ function CameraRig({
 }
 
 /** Drives the fold amount toward its target (0 flat, 4 fully folded) and reports when it arrives. */
-function FoldDriver({ fold, target, onArrive }: { fold: React.RefObject<number>; target: number; onArrive: () => void }) {
+function FoldDriver({
+  fold,
+  target,
+  speed,
+  onArrive,
+}: {
+  fold: React.RefObject<number>;
+  target: number;
+  /** Folds this many times faster (skipping through a replay). */
+  speed: React.RefObject<number>;
+  onArrive: () => void;
+}) {
+  // Arriving is getting there after moving. (Noticing a new target in an
+  // effect instead can run a frame late, when a fast fold is already there.)
   const arrived = useRef(true);
-  useEffect(() => {
-    arrived.current = fold.current === target;
-  }, [target, fold]);
   useFrame((_, dt) => {
-    const step = Math.min(dt, 0.25) / FOLD_TIME;
+    const step = (Math.min(dt, 0.25) / FOLD_TIME) * speed.current;
     const f = fold.current;
     if (f === target) {
       if (!arrived.current) {
@@ -149,6 +168,7 @@ function FoldDriver({ fold, target, onArrive }: { fold: React.RefObject<number>;
       }
       return;
     }
+    arrived.current = false;
     fold.current = f < target ? Math.min(target, f + step) : Math.max(target, f - step);
   });
   return null;
@@ -336,16 +356,54 @@ const COPY: Record<Exclude<Stage, "flat">, { title: string; body: string }> = {
   open: { title: "Your snowflake", body: "Drag to turn it. Fold it back up to keep cutting." },
 };
 
+const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
+const nextFrame = () => new Promise((done) => requestAnimationFrame(done));
+const lerpAnchors = (a: Anchor[], b: Anchor[], k: number): Anchor[] =>
+  b.map((to, i) => {
+    const from = a[i];
+    const mix = (p: Vec2, q: Vec2): Vec2 => [p[0] + (q[0] - p[0]) * k, p[1] + (q[1] - p[1]) * k];
+    return { point: mix(from.point, to.point), handle: mix(from.handle, to.handle) };
+  });
+
+type SaveState = { state: "idle" } | { state: "saving" } | { state: "saved"; id: string; copied?: boolean } | { state: "error"; message: string };
+
 export function App() {
   const mask = useMemo(() => new CutMask(), []);
+  const recorder = useMemo(() => {
+    const r = new Recorder();
+    r.reset(paperChoice(START_COLOUR), START_METHOD.id);
+    return r;
+  }, []);
   const [stage, setStage] = useState<Stage>("flat");
   const [cuts, setCuts] = useState(0);
   /** How many folds the paper is heading for, 0 to 4. */
   const [folds, setFolds] = useState(0);
   const [path, setPath] = useState<CutPath>(NO_PATH);
+  const [save, setSave] = useState<SaveState>({ state: "idle" });
+  /** Opening a saved snowflake from the link: loading, or why it failed. */
+  const [opening, setOpening] = useState<"loading" | "missing" | null>(SHARED ? "loading" : null);
+  /** Whether the paper on screen is someone's saved snowflake, untouched since it opened. */
+  const [shared, setShared] = useState(false);
+  const [replaying, setReplaying] = useState(false);
+  /** The cut being drawn (or reshaped) in a replay, and whether it has closed. */
+  const [ghost, setGhost] = useState<{ points: Vec2[]; closed: boolean }>({ points: [], closed: false });
   const [colour, setColour] = useState(START_COLOUR);
   const [method, setMethod] = useState<FoldMethod>(START_METHOD);
+  /** Colour and way of folding are picked before the first fold, so the recording starts with them. */
+  const pickColour = (c: PaperColour) => {
+    setColour(c);
+    recorder.paper = paperChoice(c);
+  };
+  const pickMethod = (m: FoldMethod) => {
+    setMethod(m);
+    recorder.fold = m.id;
+  };
   const fold = useRef(0);
+  const foldSpeed = useRef(1);
+  /** Set to skip the rest of a replay; each step then happens at once. */
+  const skip = useRef(false);
+  /** Resolved when the paper arrives at its fold target, for replays to wait on. */
+  const arrivals = useRef<(() => void)[]>([]);
   const controls = useRef<OrbitControlsImpl>(null);
   const panel = useRef<HTMLFieldSetElement>(null);
   const held = useRef(false);
@@ -371,6 +429,37 @@ export function App() {
     }
   }, [mask]);
 
+  // Open a saved snowflake: lay its cuts on the paper and unfold it.
+  useEffect(() => {
+    if (!SHARED) return;
+    let live = true;
+    loadSnowflake(SHARED).then((recording) => {
+      if (!live) return;
+      if (!recording) {
+        setOpening("missing");
+        return;
+      }
+      const paper = finalPaper(recording.events);
+      mask.setMethod(foldMethod(recording.fold));
+      mask.clear();
+      if (paper.trimmed) mask.trim(TRIM_CUT);
+      for (const c of paper.cuts) mask.cut(c);
+      setCuts(mask.count);
+      recorder.resume(recording);
+      setColour(paperColour(paperColorId(recording.paper)));
+      setMethod(foldMethod(recording.fold));
+      setSave({ state: "saved", id: SHARED });
+      setShared(true);
+      setOpening(null);
+      fold.current = 4;
+      setFolds(4);
+      setStage("unfolding");
+    });
+    return () => {
+      live = false;
+    };
+  }, [mask, recorder]);
+
   const onArrive = () => {
     setStage((s) => {
       if (s === "unfolding") return "open";
@@ -378,6 +467,144 @@ export function App() {
       if (folds < method.steps.length) return "flat";
       return mask.isTrimmed ? "cutting" : "trimming";
     });
+    for (const done of arrivals.current.splice(0)) done();
+  };
+
+  /**
+   * Everything that changes the paper, shared by the buttons and replays. A
+   * recut replaces the last cut; while cutting live, the scissors have already
+   * lifted it off the paper (`onLift`), so `lifted` skips taking it off again.
+   */
+  const apply = (e: Step, lifted = false) => {
+    switch (e.k) {
+      case "fold":
+        setFolds((f) => f + 1);
+        setStage("folding");
+        break;
+      case "trim":
+        mask.trim(TRIM_CUT);
+        setStage("cutting");
+        break;
+      case "recut":
+        if (!lifted) mask.undo();
+      // falls through
+      case "cut":
+        mask.cut(cutShape(e).points);
+        setCuts(mask.count);
+        break;
+      case "undo":
+        mask.undo();
+        setCuts(mask.count);
+        break;
+      case "unfold":
+        setStage("unfolding");
+        break;
+      case "refold":
+        setFolds(method.steps.length);
+        setStage("folding");
+        break;
+    }
+  };
+
+  /** Do it, and add it to the recording. The paper has changed, so any saved link no longer matches. */
+  const record = (e: Step, lifted = false) => {
+    recorder.add(e);
+    apply(e, lifted);
+    if (save.state !== "idle") setSave({ state: "idle" });
+    if (shared) setShared(false);
+    if (SHARED) history.replaceState(null, "", location.pathname);
+  };
+
+  const newPaper = () => {
+    mask.clear();
+    setCuts(0);
+    fold.current = 0;
+    setFolds(0);
+    setPath(NO_PATH);
+    setStage("flat");
+  };
+
+  /** Plays the recording back on fresh paper, at the pace it was made (long pauses shortened). */
+  const replay = async (recording: Recording) => {
+    skip.current = false;
+    foldSpeed.current = 1;
+    setReplaying(true);
+    setColour(paperColour(paperColorId(recording.paper)));
+    setMethod(foldMethod(recording.fold));
+    newPaper();
+    const wait = async (ms: number) => {
+      if (!skip.current) await sleep(ms);
+    };
+    const arrive = () => new Promise<void>((done) => arrivals.current.push(done));
+    /** Runs `frame` with 0 → 1 over `ms`, or not at all when skipping. */
+    const animate = async (ms: number, frame: (k: number) => void) => {
+      const start = performance.now();
+      while (!skip.current && ms > 0) {
+        const k = (performance.now() - start) / ms;
+        if (k >= 1) break;
+        frame(k);
+        await nextFrame();
+      }
+      setGhost({ points: [], closed: false });
+    };
+    // The anchors of the last pen cut, so a recut can be shown reshaping it.
+    const shapes: Anchor[][] = [];
+    await wait(700);
+    let prev = recording.events[0]?.t ?? 0;
+    for (const e of recording.events) {
+      await wait(Math.min(1200, Math.max(150, e.t - prev)));
+      prev = e.t;
+      if (skip.current) foldSpeed.current = 40;
+      if (e.k === "cut") {
+        // Draw the cut again, sped up if it took a while.
+        const total = drawTime(e);
+        const scale = Math.max(1, total / 2500);
+        await animate(total / scale, (k) => setGhost({ points: cutShape(e, k * total).points, closed: false }));
+        apply(e);
+        shapes.push(cutAnchors(e));
+        if (e.tool !== "surprise") await wait(250);
+      } else if (e.k === "recut") {
+        // Pull the last cut into its new shape.
+        const from = shapes.pop() ?? [];
+        const to = cutAnchors(e);
+        mask.undo();
+        setCuts(mask.count);
+        if (from.length === to.length && to.length > 2)
+          await animate(450, (k) => setGhost({ points: outline(lerpAnchors(from, to, k * k * (3 - 2 * k)), true), closed: true }));
+        apply(e, true);
+        shapes.push(to);
+      } else {
+        if (e.k === "undo") shapes.pop();
+        const moves = e.k === "fold" || e.k === "refold" || e.k === "unfold";
+        const arrived = moves ? arrive() : null;
+        apply(e);
+        if (arrived) await arrived;
+      }
+    }
+    foldSpeed.current = 1;
+    setReplaying(false);
+  };
+
+  const onSave = async () => {
+    setSave({ state: "saving" });
+    const result = await saveSnowflake(recorder.recording);
+    if ("error" in result) {
+      setSave({ state: "error", message: result.error });
+      return;
+    }
+    history.replaceState(null, "", shareUrl(result.id));
+    setSave({ state: "saved", id: result.id });
+  };
+
+  const copyLink = async (id: string) => {
+    const url = shareUrl(id);
+    try {
+      if (navigator.share && matchMedia("(pointer: coarse)").matches) await navigator.share({ title: "Paper snowflake", url });
+      else await navigator.clipboard.writeText(url);
+      setSave({ state: "saved", id, copied: true });
+    } catch {
+      // Dismissed the share sheet, or no clipboard: the link is on screen to copy by hand.
+    }
   };
 
   // While the paper folds or unfolds, the panel keeps showing the step that
@@ -388,24 +615,37 @@ export function App() {
   if (!busy) settled.current = { stage, folds };
   const shown = busy ? settled.current : { stage, folds };
 
-  const copy = shown.stage === "flat" ? method.steps[shown.folds] : COPY[shown.stage];
+  const copy = opening
+    ? opening === "loading"
+      ? { title: "Opening a snowflake…", body: "" }
+      : { title: "Snowflake not found", body: "That link doesn't lead to a saved snowflake. Fold a new one here instead." }
+    : replaying
+      ? { title: "Replaying…", body: stage === "flat" ? (method.steps[folds]?.body ?? "") : COPY[stage].body }
+      : shown.stage === "flat"
+        ? method.steps[shown.folds]
+        : shown.stage === "open" && shared
+          ? { title: "A paper snowflake", body: "Someone cut this one. Replay it, or fold it back up to keep cutting." }
+          : COPY[shown.stage];
   // The way to fold, and the paper, can change until the first fold is made.
-  const choosing = shown.stage === "flat" && shown.folds === 0;
+  const choosing = shown.stage === "flat" && shown.folds === 0 && !replaying && !opening;
   const step =
-    shown.stage === "flat"
-      ? shown.folds + 1
-      : shown.stage === "trimming"
-        ? 5
-        : shown.stage === "cutting"
-          ? 6
-          : shown.stage === "open"
-            ? 7
-            : null;
+    opening || replaying
+      ? null
+      : shown.stage === "flat"
+        ? shown.folds + 1
+        : shown.stage === "trimming"
+          ? 5
+          : shown.stage === "cutting"
+            ? 6
+            : shown.stage === "open"
+              ? 7
+              : null;
   /** A shape is being drawn and has not been cut yet. */
   const open = !path.closed && path.anchors.length > 0;
+  const canReplay = recorder.events.some((e) => e.k === "cut");
 
   return (
-    <div className="app">
+    <div className="app" data-stage={stage}>
       <Canvas
         shadows={!LITE}
         dpr={LITE ? 1 : [1, MAX_DPR]}
@@ -450,14 +690,14 @@ export function App() {
           </Sway>
         </DragTurn>
         {stage === "trimming" && <TrimGuide />}
-        {stage === "cutting" && (
+        {stage === "cutting" && !replaying && (
           <CuttingBoard
             path={path}
             setPath={setPath}
             mask={mask}
             onClose={(anchors) => {
-              mask.cut(outline(anchors, true));
-              setCuts(mask.count);
+              // A closed path being closed again is the last cut, reshaped.
+              record({ k: path.closed ? "recut" : "cut", tool: "pen", pts: penCut(anchors) }, path.closed);
               setPath({ anchors, closed: true });
             }}
             onLift={() => {
@@ -466,10 +706,20 @@ export function App() {
             }}
           />
         )}
+        {ghost.points.length > 1 && (
+          <>
+            <CutPreview shape={ghost.points} mask={mask} z={0.086} />
+            <Stroke
+              points={(ghost.closed ? [...ghost.points, ghost.points[0]] : ghost.points).map(([x, y]) => [x, y, 0.09] as [number, number, number])}
+              color="#e2483d"
+              lineWidth={2.5}
+            />
+          </>
+        )}
         <Snowfall />
         <Ready />
 
-        <FoldDriver fold={fold} target={foldTarget} onArrive={onArrive} />
+        <FoldDriver fold={fold} target={foldTarget} speed={foldSpeed} onArrive={onArrive} />
         <CameraRig stage={stage} folds={folds} method={method} controls={controls} panel={panel} />
         <OrbitControls
           ref={controls}
@@ -481,7 +731,7 @@ export function App() {
         />
       </Canvas>
 
-      <fieldset className="panel" ref={panel} disabled={busy} aria-busy={busy}>
+      <fieldset className="panel" ref={panel} disabled={busy && !replaying} aria-busy={busy}>
         <div className="step">{step ? `Step ${step} of ${STEP_COUNT}` : "\u00a0"}</div>
         <h1>{copy.title}</h1>
         <div className="body">
@@ -494,7 +744,7 @@ export function App() {
                   role="radio"
                   aria-checked={method === m}
                   className={method === m ? "on" : undefined}
-                  onClick={() => setMethod(m)}
+                  onClick={() => pickMethod(m)}
                 >
                   {m.label}
                 </button>
@@ -514,111 +764,116 @@ export function App() {
                     title={c.name}
                     className={colour.id === c.id ? "swatch on" : "swatch"}
                     style={{ "--swatch": c.hex } as React.CSSProperties}
-                    onClick={() => setColour(c)}
+                    onClick={() => pickColour(c)}
                   />
                 ))}
               </div>
               <span className="papers-name">{colour.name}</span>
             </div>
           )}
-          {shown.stage === "cutting" && (
+          {shown.stage === "cutting" && !replaying && (
             <p>{CUT_HINTS[path.closed ? "closed" : path.anchors.length ? "open" : "start"]}</p>
           )}
+          {shown.stage === "open" && !replaying && save.state === "error" && <p className="error">Couldn't save: {save.message}</p>}
         </div>
         <div className="actions">
-          {shown.stage === "flat" && (
-            <button
-              onClick={() => {
-                setFolds(folds + 1);
-                setStage("folding");
-              }}
-            >
-              Fold
+          {shown.stage === "open" && !replaying && save.state === "saved" && (
+            <input
+              className="share"
+              readOnly
+              value={shareUrl(save.id)}
+              aria-label="Link to this snowflake"
+              onFocus={(e) => e.target.select()}
+            />
+          )}
+          {replaying && (
+            <button className="quiet" onClick={() => (skip.current = true)}>
+              Skip to the end
             </button>
           )}
-          {shown.stage === "trimming" && (
-            <button
-              onClick={() => {
-                mask.trim(TRIM_CUT);
-                setStage("cutting");
-              }}
-            >
-              Trim
-            </button>
-          )}
-          {shown.stage === "cutting" && open && (
+          {!replaying && opening !== "loading" && (
             <>
-              <button
-                disabled={path.anchors.length < 3}
-                onClick={() => {
-                  mask.cut(outline(path.anchors, true));
-                  setCuts(mask.count);
-                  setPath({ anchors: path.anchors, closed: true });
-                }}
-              >
-                Cut
-              </button>
-              <button className="quiet" onClick={() => setPath(NO_PATH)}>
-                Cancel
-              </button>
-            </>
-          )}
-          {shown.stage === "cutting" && !open && (
-            <>
-              <button
-                disabled={cuts === 0}
-                onClick={() => {
-                  setPath(NO_PATH);
-                  setStage("unfolding");
-                }}
-              >
-                Unfold
-              </button>
-              <button
-                className="quiet"
-                onClick={() => {
-                  setPath(NO_PATH);
-                  for (const c of randomCuts(3)) mask.cut(c);
-                  setCuts(mask.count);
-                }}
-              >
-                Surprise me
-              </button>
-              <button
-                className="quiet"
-                disabled={cuts === 0}
-                onClick={() => {
-                  setPath(NO_PATH);
-                  mask.undo();
-                  setCuts(mask.count);
-                }}
-              >
-                Undo
-              </button>
-            </>
-          )}
-          {shown.stage === "open" && (
-            <>
-              <button
-                onClick={() => {
-                  setFolds(method.steps.length);
-                  setStage("folding");
-                }}
-              >
-                Fold back up
-              </button>
-              <button
-                className="quiet"
-                onClick={() => {
-                  mask.clear();
-                  setCuts(0);
-                  fold.current = 0;
-                  setFolds(0);
-                  setStage("flat");
-                }}
-              >
-                New paper
-              </button>
+              {shown.stage === "flat" && <button onClick={() => record({ k: "fold" })}>Fold</button>}
+              {shown.stage === "trimming" && <button onClick={() => record({ k: "trim" })}>Trim</button>}
+              {shown.stage === "cutting" && open && (
+                <>
+                  <button
+                    disabled={path.anchors.length < 3}
+                    onClick={() => {
+                      record({ k: "cut", tool: "pen", pts: penCut(path.anchors) });
+                      setPath({ anchors: path.anchors, closed: true });
+                    }}
+                  >
+                    Cut
+                  </button>
+                  <button className="quiet" onClick={() => setPath(NO_PATH)}>
+                    Cancel
+                  </button>
+                </>
+              )}
+              {shown.stage === "cutting" && !open && (
+                <>
+                  <button
+                    disabled={cuts === 0}
+                    onClick={() => {
+                      setPath(NO_PATH);
+                      record({ k: "unfold" });
+                    }}
+                  >
+                    Unfold
+                  </button>
+                  <button
+                    className="quiet"
+                    onClick={() => {
+                      setPath(NO_PATH);
+                      for (const c of randomCuts(3)) record({ k: "cut", tool: "surprise", pts: outlineCut(c) });
+                    }}
+                  >
+                    Surprise me
+                  </button>
+                  <button
+                    className="quiet"
+                    disabled={cuts === 0}
+                    onClick={() => {
+                      setPath(NO_PATH);
+                      record({ k: "undo" });
+                    }}
+                  >
+                    Undo
+                  </button>
+                </>
+              )}
+              {shown.stage === "open" && (
+                <>
+                  {save.state === "saved" ? (
+                    <button onClick={() => copyLink(save.id)}>{save.copied ? "Link copied" : "Share link"}</button>
+                  ) : (
+                    <button disabled={save.state === "saving"} onClick={onSave}>
+                      {save.state === "saving" ? "Saving…" : "Save"}
+                    </button>
+                  )}
+                  {canReplay && (
+                    <button className="quiet" onClick={() => replay(recorder.recording)}>
+                      Replay
+                    </button>
+                  )}
+                  <button className="quiet" onClick={() => record({ k: "refold" })}>
+                    Fold back up
+                  </button>
+                  <button
+                    className="quiet"
+                    onClick={() => {
+                      recorder.reset(paperChoice(colour), method.id);
+                      setSave({ state: "idle" });
+                      setShared(false);
+                      if (SHARED || save.state === "saved") history.replaceState(null, "", location.pathname);
+                      newPaper();
+                    }}
+                  >
+                    New paper
+                  </button>
+                </>
+              )}
             </>
           )}
         </div>

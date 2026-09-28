@@ -2,7 +2,9 @@ name: Deploy
 # Builds the app and ships `dist/` to the Cloudflare Pages project `snowflakes`:
 # every pull request gets a preview deployment (its URL is posted on the PR),
 # and every push to main is the production deployment.
-# Needs the repo secrets CLOUDFLARE_API_TOKEN (Pages: Edit) and
+# Saved snowflakes live in D1: production in `snowflakes`, previews in
+# `snowflakes-preview` (see wrangler.toml and scripts/d1.sh).
+# Needs the repo secrets CLOUDFLARE_API_TOKEN (Pages: Edit, D1: Edit) and
 # CLOUDFLARE_ACCOUNT_ID. Runs on the same runner as check.yml.
 on:
   push:
@@ -51,6 +53,9 @@ jobs:
         # Fails harmlessly when it already exists; a real auth problem fails
         # the deploy step below with Cloudflare's own message.
         run: $WRANGLER pages project create "$PAGES_PROJECT" --production-branch main || true
+      - name: Set up the D1 database
+        # Previews get their own database; only main migrates production.
+        run: scripts/d1.sh ${{ github.event_name == 'push' && 'production' || 'preview' }}
       - name: Deploy to Cloudflare Pages
         id: deploy
         env:
