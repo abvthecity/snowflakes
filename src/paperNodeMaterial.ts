@@ -12,6 +12,7 @@ import {
   float,
   fwidth,
   length,
+  max,
   mix,
   normalView,
   positionView,
@@ -19,16 +20,19 @@ import {
   texture,
   uniform,
   uv,
+  vec2,
   vec3,
 } from "three/tsl";
 import { tslExports } from "vgpu/three";
 import paperModule from "./paper.wgsl";
+import { CONTACT_SHADE, EDGE_SHADE } from "./paperShading";
 
 type PaperExports = {
-  paperSurface: { p: Node; footprint: Node; crease: Node | number; facing: Node };
+  paperSurface: { p: Node; footprint: Node; crease: Node | number; facing: Node; start: Node };
+  foldShading: Record<"p" | "footprint" | "facing" | "start" | `folds${0 | 1 | 2}` | `contact${0 | 1 | 2 | 3 | 4 | 5}`, Node>;
 };
 
-const { paperSurface } = tslExports<PaperExports>(paperModule)("paperSurface");
+const { paperSurface, foldShading } = tslExports<PaperExports>(paperModule)("paperSurface", "foldShading");
 
 /**
  * Physical lighting, plus the light that comes through the sheet. Paper is
@@ -57,6 +61,12 @@ class PaperMaterial extends THREE.MeshPhysicalNodeMaterial {
   readonly crease = uniform(0);
   /** The sheet's colour (see paperColours.ts); white by default. */
   readonly tint = uniform(new THREE.Color("#fcfcfa"));
+  /** The angle of the first crease line; see FoldMethod.sectors. */
+  readonly creaseStart = uniform(0);
+  /** How far each crease is folded, signed by which way: see foldShading in paper.wgsl, and Paper.tsx. */
+  readonly folds = Array.from({ length: 3 }, () => uniform(new THREE.Vector4()));
+  /** Where flaps lie on each sector's creases, signed by which side: see foldShading in paper.wgsl, and Paper.tsx. */
+  readonly contact = Array.from({ length: 6 }, () => uniform(new THREE.Vector4()));
   transmittanceNode: Vec3Node = vec3(0);
 
   setupLightingModel() {
@@ -70,13 +80,30 @@ export function createPaperNodeMaterial(mask: THREE.Texture): PaperNodeMaterial 
   // Alpha to coverage turns the mask's edge into multisample coverage, so the
   // cut outlines come out as smooth as the sheet's own edges instead of stepped.
   const material = new PaperMaterial({ side: THREE.DoubleSide, alphaTest: 0.5, alphaToCoverage: true });
-  const { crease, tint } = material;
+  const { crease, tint, creaseStart: start, folds, contact } = material;
 
   // Where this point lies on the flat sheet, and how much sheet one pixel covers.
   const p = uv().mul(2).sub(1);
   const footprint = length(fwidth(p));
-  const surface = paperSurface({ p, footprint, crease, facing: faceDirection });
-  const height = surface.x;
+  const surface = paperSurface({ p, footprint, crease, facing: faceDirection, start });
+  const [folds0, folds1, folds2] = folds;
+  const [contact0, contact1, contact2, contact3, contact4, contact5] = contact;
+  const folding = foldShading({
+    p,
+    footprint,
+    facing: faceDirection,
+    start,
+    folds0,
+    folds1,
+    folds2,
+    contact0,
+    contact1,
+    contact2,
+    contact3,
+    contact4,
+    contact5,
+  });
+  const height = surface.x.add(folding.x);
   const formation = surface.y;
   const albedo = surface.z;
   const shade = surface.w;
@@ -87,8 +114,26 @@ export function createPaperNodeMaterial(mask: THREE.Texture): PaperNodeMaterial 
   material.opacityNode = cut;
   material.alphaTestNode = float(0.5).sub(fwidth(cut).mul(0.5));
 
+  // The sheet's edges, cut or square, show as a fine darker line, as a paper
+  // edge does lying on paper: the layer under it is the same colour, so the
+  // line is what tells where one ends. A few taps of the mask around the
+  // point tell how near a cut is.
+  const reach = max(float(0.0025), footprint.mul(1.2));
+  const tap = reach.mul(0.5);
+  const inside = texture(mask, uv().add(vec2(tap, 0)))
+    .r.add(texture(mask, uv().sub(vec2(tap, 0))).r)
+    .add(texture(mask, uv().add(vec2(0, tap))).r)
+    .add(texture(mask, uv().sub(vec2(0, tap))).r)
+    .mul(0.25);
+  const toSquare = float(1).sub(max(abs(p.x), abs(p.y))).div(reach).clamp();
+  const edge = max(float(1).sub(inside).mul(2).clamp(), float(1).sub(toSquare));
+
   // The sheet's colour, mottled by the pulp; creases hold a little shadow in their furrows.
-  material.colorNode = tint.mul(albedo).mul(float(1).sub(shade.mul(0.07)));
+  material.colorNode = tint
+    .mul(albedo)
+    .mul(float(1).sub(shade.mul(0.07)))
+    .mul(float(1).sub(edge.mul(EDGE_SHADE)))
+    .mul(float(1).sub(folding.y.mul(CONTACT_SHADE)));
   material.roughnessNode = float(0.8).add(formation.mul(0.12));
   material.sheen = 0.3;
   material.sheenRoughness = 0.65;
