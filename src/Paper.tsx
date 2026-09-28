@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, type RefObject } from "react";
 import * as THREE from "three";
 import { SECTOR_ANGLE, SECTOR_COUNT, polar, type FoldMethod, type Vec2 } from "./folds";
 import { webgpu } from "./gpu";
-import { createPaperMaterial } from "./paperMaterial";
+import { createFringeMaterial, createPaperMaterial } from "./paperMaterial";
 
 /** How far apart the stacked layers sit, in paper widths. */
 const THICKNESS = 0.0035;
@@ -74,10 +74,13 @@ export function Paper({
   colour: string;
 }) {
   const material = useMemo(() => webgpu()?.createPaperNodeMaterial(mask) ?? createPaperMaterial(mask), [mask]);
+  // The soft outer pixel of every cut edge, drawn over what lies behind.
+  const fringe = useMemo(() => webgpu()?.createFringeNodeMaterial(mask) ?? createFringeMaterial(mask), [mask]);
   useEffect(() => {
     if ("tint" in material) material.tint.value.set(colour);
     else material.color.set(colour);
-  }, [material, colour]);
+    fringe.color.set(colour);
+  }, [material, fringe, colour]);
   // Crease k runs out from the centre at creaseStart + k·30°, between sectors k - 1 and k.
   const creaseStart = Math.atan2(method.sectors[0].outline[1][1], method.sectors[0].outline[1][0]);
   useEffect(() => {
@@ -97,7 +100,6 @@ export function Paper({
         color: new THREE.Color("#fbfaf5"),
         alphaMap: mask,
         alphaTest: 0.5,
-        alphaToCoverage: true,
         side: THREE.DoubleSide,
       }),
     [mask],
@@ -232,6 +234,7 @@ export function Paper({
         >
           <mesh geometry={geometries[s.index]} material={material} castShadow receiveShadow />
           <mesh geometry={geometries[s.index]} material={buried} visible={false} castShadow receiveShadow />
+          <mesh geometry={geometries[s.index]} material={fringe} receiveShadow />
         </group>
       ))}
       {/* Too small to see, but it gets the plain paper compiled with the rest of the scene, before the first fold needs it. */}
