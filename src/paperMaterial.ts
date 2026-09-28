@@ -90,9 +90,8 @@ export function createPaperMaterial(mask: THREE.Texture): THREE.MeshPhysicalMate
     color: new THREE.Color("#fcfcfa"),
     map: tint,
     bumpMap: fibres,
-    bumpScale: 0.6,
+    bumpScale: 0.1,
     roughness: 0.88,
-    roughnessMap: fibres,
     sheen: 0.35,
     sheenRoughness: 0.7,
     sheenColor: new THREE.Color("#ffffff"),
@@ -101,11 +100,11 @@ export function createPaperMaterial(mask: THREE.Texture): THREE.MeshPhysicalMate
     side: THREE.DoubleSide,
   });
 
-  // The fibre texture is authored around mid-grey; lift it so `map` only
-  // mottles the white rather than darkening it.
+  // The fibre texture is authored around mid-grey; `map` only breathes on
+  // the colour by a percent either way, so the sheet reads clean and even.
   material.onBeforeCompile = (shader) => {
     shader.uniforms.translucency = { value: 0.55 };
-    shader.uniforms.translucencyTint = { value: new THREE.Color("#ffe2b8") };
+    shader.uniforms.translucencyTint = { value: new THREE.Color("#fff6ec") };
     shader.fragmentShader = shader.fragmentShader
       .replace(
         "#include <common>",
@@ -115,7 +114,7 @@ export function createPaperMaterial(mask: THREE.Texture): THREE.MeshPhysicalMate
         "#include <map_fragment>",
         `#ifdef USE_MAP
           vec4 sampledDiffuseColor = texture2D( map, vMapUv );
-          diffuseColor.rgb *= mix( vec3( 0.93 ), vec3( 1.04 ), sampledDiffuseColor.r );
+          diffuseColor.rgb *= mix( vec3( 0.99 ), vec3( 1.01 ), sampledDiffuseColor.r );
         #endif`,
       )
       .replace("#include <alphatest_fragment>", CUT_EDGE)

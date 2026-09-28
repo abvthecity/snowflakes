@@ -12,7 +12,6 @@ import {
   float,
   fwidth,
   length,
-  mix,
   normalView,
   positionView,
   select,
@@ -93,9 +92,9 @@ export function createPaperNodeMaterial(mask: THREE.Texture): PaperNodeMaterial 
   material.opacityNode = cut;
   material.alphaTestNode = float(0.5).add(rim);
 
-  // The sheet's colour, mottled by the pulp; creases hold a little shadow in their furrows.
-  material.colorNode = tint.mul(albedo).mul(float(1).sub(shade.mul(0.07)));
-  material.roughnessNode = float(0.8).add(formation.mul(0.12));
+  // The sheet's colour, even across the sheet; creases hold a faint shadow in their furrows.
+  material.colorNode = tint.mul(albedo).mul(float(1).sub(shade.mul(0.04)));
+  material.roughnessNode = float(0.85).add(formation.mul(0.04));
   material.sheen = 0.3;
   material.sheenRoughness = 0.65;
   material.sheenColor = new THREE.Color("#ffffff");
@@ -112,10 +111,10 @@ export function createPaperNodeMaterial(mask: THREE.Texture): PaperNodeMaterial 
   const grad = sign(det).mul(height.dFdx().mul(r1).add(height.dFdy().mul(r2)));
   material.normalNode = abs(det).mul(normalView).sub(grad).normalize();
 
-  // Light from behind comes through warmed, and patchy: the thin spots of
-  // the formation let more through, as when paper is held to a window. It
+  // Light from behind comes through evenly and barely warmed, so the side of
+  // a flap turned from the light stays clean rather than blotchy. It
   // crosses the dyed fibres on its way, so a coloured sheet glows deeper.
-  material.transmittanceNode = vec3(1.0, 0.95, 0.86).mul(mix(float(0.55), float(0.3), formation)).mul(tint);
+  material.transmittanceNode = vec3(1.0, 0.98, 0.95).mul(0.5).mul(tint);
 
   return material;
 }
