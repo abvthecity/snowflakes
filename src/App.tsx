@@ -679,6 +679,7 @@ export function App() {
               fold={fold}
               mask={mask.texture}
               creased={stage !== "flat" && !(stage === "still" && cuts === 0)}
+              pressed={stage === "trimming" || stage === "cutting"}
               colour={colour.hex}
             />
           </Sway>

@@ -16,6 +16,12 @@ const THICKNESS = 0.0035;
  * distance from the centre, so each sector catches the light at its own angle.
  */
 const CREASE_RISE = 0.045;
+/**
+ * Paper doesn't lie flat the moment it is folded: the newest flap springs
+ * open by this much (radians), so it never lies in the plane of the layer
+ * under it. The next fold presses it flat, and so does starting to cut.
+ */
+const SPRING = 5 * (Math.PI / 180);
 /** Below this cosine between a layer and the line of sight, it counts as edge-on. */
 const EDGE_ON = 0.4;
 
@@ -64,12 +70,15 @@ export function Paper({
   fold,
   mask,
   creased,
+  pressed,
   colour,
 }: {
   method: FoldMethod;
   fold: RefObject<number>;
   mask: THREE.Texture;
   creased: boolean;
+  /** Whether the folded paper is held flat, as it is for trimming and cutting. */
+  pressed: boolean;
   /** The sheet's colour, an sRGB hex (see paperColours.ts). */
   colour: string;
 }) {
@@ -126,6 +135,7 @@ export function Paper({
   /** How surely each crease is a flap's edge lying on paper, 0 to 1. */
   const overPaper = useMemo(() => new Array<number>(SECTOR_COUNT).fill(0), []);
   const crease = useRef(0);
+  const press = useRef(pressed ? 1 : 0);
 
   useFrame(({ camera }, dt) => {
     const f = fold.current;
@@ -142,6 +152,7 @@ export function Paper({
       fromFront = normal.dot(eye) < 0;
     }
     crease.current = THREE.MathUtils.damp(crease.current, creased ? 1 : 0, 3, dt);
+    press.current = THREE.MathUtils.damp(press.current, pressed ? 1 : 0, 6, dt);
     // The WebGPU paper draws the crease lines themselves, as the sheet opens.
     if ("crease" in material) material.crease.value = crease.current * (1 - clamp01(f));
     for (const s of method.sectors) {
@@ -153,7 +164,11 @@ export function Paper({
       let layer = 0;
       for (let i = 0; i < foldAngles.length; i++) {
         const p = ease(clamp01(f - i));
-        if (s.moves[i] && p > 0) m.premultiply(r.makeRotationAxis(axes[i], lift[i] * Math.PI * p));
+        // Each flap stays sprung open until the next fold (or the scissors) presses it down.
+        const last = i === foldAngles.length - 1;
+        const open = last ? 1 - press.current : 1 - ease(clamp01(f - i - 1));
+        const angle = Math.PI - SPRING * open;
+        if (s.moves[i] && p > 0) m.premultiply(r.makeRotationAxis(axes[i], lift[i] * angle * p));
         if (p > 0) layer = THREE.MathUtils.lerp(s.layers[i], s.layers[i + 1], p);
       }
       // The finished cone turns upright as the last fold closes it.
