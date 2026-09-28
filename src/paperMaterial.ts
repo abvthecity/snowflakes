@@ -50,6 +50,38 @@ function fibreTexture(size = 1024): THREE.CanvasTexture {
   return tex;
 }
 
+/**
+ * How much of a pixel the paper covers, with the mask's ramp across the cut
+ * stretched to span one pixel, centred on the cut. The paper keeps the
+ * pixels it covers wholly; the fringe (createFringeMaterial) blends in the
+ * pixel straddling the cut. See paperNodeMaterial.ts for why not alpha to coverage.
+ */
+const CUT_EDGE = `float cutRim = 0.5 * fwidth( diffuseColor.a );
+  float cutCover = clamp( ( diffuseColor.a - alphaTest ) / max( 2.0 * cutRim, 1e-5 ) + 0.5, 0.0, 1.0 );
+  #ifdef PAPER_FRINGE
+    diffuseColor.a = diffuseColor.a >= alphaTest + cutRim ? 0.0 : cutCover;
+    if ( diffuseColor.a < 0.002 ) discard;
+  #else
+    if ( diffuseColor.a < alphaTest + cutRim ) discard;
+    diffuseColor.a = 1.0;
+  #endif`;
+
+/** The soft outer pixel of every cut edge, shaded plainly and blended over what lies behind. */
+export function createFringeMaterial(mask: THREE.Texture): THREE.MeshLambertMaterial {
+  const material = new THREE.MeshLambertMaterial({
+    alphaMap: mask,
+    alphaTest: 0.5,
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  material.defines = { PAPER_FRINGE: "" };
+  material.onBeforeCompile = (shader) => {
+    shader.fragmentShader = shader.fragmentShader.replace("#include <alphatest_fragment>", CUT_EDGE);
+  };
+  return material;
+}
+
 /** Folds and creases, as the WebGPU paper has them; see foldShading in paper.wgsl. */
 export type WebGLPaperMaterial = THREE.MeshPhysicalMaterial & {
   creaseStart: { value: number };
@@ -105,8 +137,6 @@ export function createPaperMaterial(mask: THREE.Texture): WebGLPaperMaterial {
     sheenColor: new THREE.Color("#ffffff"),
     alphaMap: mask,
     alphaTest: 0.5,
-    // Smooth the cut outlines with the canvas's multisampling rather than a hard step.
-    alphaToCoverage: true,
     side: THREE.DoubleSide,
   });
 
@@ -137,14 +167,7 @@ export function createPaperMaterial(mask: THREE.Texture): WebGLPaperMaterial {
         vec2 folding = foldShading( sheetP, sheetFootprint, gl_FrontFacing ? 1.0 : - 1.0 );
         diffuseColor.rgb *= ( 1.0 - folding.x * ${CURL_SHADE.toFixed(3)} ) * ( 1.0 - folding.y * ${CONTACT_SHADE.toFixed(3)} );`,
       )
-      // As three does for alpha to coverage, but with the one-pixel ramp
-      // centred on the cut rather than starting at it.
-      .replace(
-        "#include <alphatest_fragment>",
-        `float cutWidth = fwidth( diffuseColor.a );
-        diffuseColor.a = smoothstep( alphaTest - 0.5 * cutWidth, alphaTest + 0.5 * cutWidth, diffuseColor.a );
-        if ( diffuseColor.a == 0.0 ) discard;`,
-      )
+      .replace("#include <alphatest_fragment>", CUT_EDGE)
       .replace(
         "#include <lights_fragment_end>",
         `#include <lights_fragment_end>
