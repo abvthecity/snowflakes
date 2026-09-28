@@ -4,7 +4,7 @@
 import { useFrame } from "@react-three/fiber";
 import { useEffect, useMemo, useRef, type RefObject } from "react";
 import * as THREE from "three";
-import { SECTOR_ANGLE, SECTOR_COUNT, polar, type FoldMethod, type Vec2 } from "./folds";
+import type { FoldMethod, Vec2 } from "./folds";
 import { webgpu } from "./gpu";
 import { createFringeMaterial, createPaperMaterial } from "./paperMaterial";
 
@@ -40,31 +40,6 @@ function sectorGeometry(outline: readonly Vec2[]) {
   return g;
 }
 
-/** A sector's crease lines and middle, in the sheet's frame, wherever the folds have put it. */
-class SectorFrame {
-  private readonly local: { creases: THREE.Vector3[]; mid: THREE.Vector3 };
-  readonly creases = [new THREE.Vector3(), new THREE.Vector3()];
-  readonly mid = new THREE.Vector3();
-  readonly centre = new THREE.Vector3();
-  readonly normal = new THREE.Vector3();
-
-  constructor(creaseStart: number, index: number) {
-    const t = creaseStart + index * SECTOR_ANGLE;
-    this.local = {
-      creases: [t, t + SECTOR_ANGLE].map((a) => new THREE.Vector3(...polar(1, a), 0)),
-      mid: new THREE.Vector3(...polar(0.5, t + SECTOR_ANGLE / 2), 0),
-    };
-  }
-
-  place(m: THREE.Matrix4) {
-    this.creases.forEach((c, i) => c.copy(this.local.creases[i]).transformDirection(m));
-    this.mid.copy(this.local.mid).applyMatrix4(m);
-    this.centre.setFromMatrixPosition(m);
-    this.normal.setFromMatrixColumn(m, 2).normalize();
-    return this;
-  }
-}
-
 export function Paper({
   method,
   fold,
@@ -93,7 +68,7 @@ export function Paper({
   // Crease k runs out from the centre at creaseStart + k·30°, between sectors k - 1 and k.
   const creaseStart = Math.atan2(method.sectors[0].outline[1][1], method.sectors[0].outline[1][0]);
   useEffect(() => {
-    material.creaseStart.value = creaseStart;
+    if ("creaseStart" in material) material.creaseStart.value = creaseStart;
   }, [material, creaseStart]);
   const { foldAngles, lift, turn: cone } = method;
   const geometries = useMemo(() => method.sectors.map((s) => sectorGeometry(s.outline)), [method]);
@@ -102,17 +77,22 @@ export function Paper({
   // on every one of them is what bogs a phone down. Layers buried under
   // the rest of the stack draw in plain paper instead: only a sliver of their
   // edge ever shows, and they draw after the top layers, so the GPU can skip
-  // most of their pixels altogether.
+  // most of their pixels altogether. That sliver does show beside a flap
+  // standing open, often in its shadow, so it takes the room's light as
+  // the paper does, and the paper's colour.
   const buried = useMemo(
     () =>
-      new THREE.MeshLambertMaterial({
-        color: new THREE.Color("#fbfaf5"),
+      new THREE.MeshStandardMaterial({
+        roughness: 0.9,
         alphaMap: mask,
         alphaTest: 0.5,
         side: THREE.DoubleSide,
       }),
     [mask],
   );
+  useEffect(() => {
+    buried.color.set(colour);
+  }, [buried, colour]);
   // Each sector is a pair of meshes, one in each material, and shows one of
   // them: swapping a mesh's material mid-flight upsets three's WebGPU renderer.
   const sectors = useRef<({ turn: THREE.Group; paper: THREE.Mesh; plain: THREE.Mesh } | null)[]>([]);
@@ -125,17 +105,9 @@ export function Paper({
       normal: new THREE.Vector3(),
       eye: new THREE.Vector3(),
       facing: new THREE.Vector3(),
-      other: new THREE.Vector3(),
-      across: new THREE.Vector3(),
-      at: new THREE.Vector3(),
     }),
     [],
   );
-  // Where each sector's creases and middle are, as the folds carry them.
-  const sectorFrames = useMemo(() => method.sectors.map((s) => new SectorFrame(creaseStart, s.index)), [method, creaseStart]);
-  const folds = useMemo(() => new Array<number>(SECTOR_COUNT).fill(0), []);
-  /** How surely each crease is a flap's edge lying on paper, 0 to 1. */
-  const overPaper = useMemo(() => new Array<number>(SECTOR_COUNT).fill(0), []);
   const crease = useRef(0);
   const press = useRef(pressed ? 1 : 0);
 
@@ -199,51 +171,6 @@ export function Paper({
       paper.visible = !hidden;
       plain.visible = hidden;
     }
-
-    // How far each crease is folded: 0 while its two sectors lie flat, 1 once
-    // one is folded right back onto the other, signed by the side of the
-    // sector it folds toward.
-    const matrices = sectors.current.map((sector) => sector?.turn.matrix);
-    if (matrices.some((m) => !m)) return;
-    const frames = sectorFrames.map((f, i) => f.place(matrices[i]!));
-    for (let k = 0; k < SECTOR_COUNT; k++) {
-      const a = frames[(k + SECTOR_COUNT - 1) % SECTOR_COUNT];
-      const b = frames[k];
-      const folded = (1 - a.normal.dot(b.normal)) / 2;
-      folds[k] = folded * Math.sign(scratch.across.subVectors(b.mid, a.centre).dot(a.normal));
-      overPaper[k] = 0;
-    }
-    // Shading only goes where a flap has been folded over onto paper: where
-    // its folded edge lies along a crease of a layer beneath, and that layer
-    // carries on past it. The layer takes a soft shadow beside the edge, on
-    // the side the flap doesn't cover, and the flap darkens a little as it curls. Folds
-    // at the outside of the stack, with nothing beyond them, stay plain.
-    frames.forEach((s, i) => {
-      s.creases.forEach((line, j) => {
-        let shade = 0;
-        const own = scratch.across.crossVectors(line, s.mid).dot(s.normal);
-        frames.forEach((t, ti) => {
-          if (ti === i) return;
-          t.creases.forEach((edge, ej) => {
-            const k = (ti + ej) % SECTOR_COUNT;
-            // Fades in smoothly as the flap settles, so it never pops.
-            const settled = THREE.MathUtils.smoothstep(Math.abs(folds[k]), 0.9, 1);
-            const along = THREE.MathUtils.smoothstep(line.dot(edge), 0.985, 0.9995);
-            const weight = settled * along;
-            if (weight === 0) return;
-            // The flap must lie across the line from this sector, not on top of it.
-            if (scratch.at.crossVectors(line, t.mid).dot(s.normal) * own >= 0) return;
-            overPaper[k] = Math.max(overPaper[k], weight);
-            if (weight <= Math.abs(shade)) return;
-            const side = scratch.other.subVectors(t.mid, s.mid).dot(s.normal);
-            if (Math.abs(side) < 1e-6) return;
-            shade = weight * Math.sign(side);
-          });
-        });
-        material.contact[i >> 1].value.setComponent((i & 1) * 2 + j, shade);
-      });
-    });
-    for (let k = 0; k < SECTOR_COUNT; k++) material.folds[k >> 2].value.setComponent(k & 3, folds[k] * overPaper[k]);
   });
 
   return (

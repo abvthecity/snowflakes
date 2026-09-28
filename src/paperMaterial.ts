@@ -2,7 +2,6 @@
 // through it from behind. Built on MeshPhysicalMaterial so it takes the
 // scene's image-based lighting, with a small shader patch for translucency.
 import * as THREE from "three";
-import { CONTACT_SHADE, CURL_SHADE } from "./paperShading";
 
 /** A tileable-enough field of short fibres, used as colour and bump. */
 function fibreTexture(size = 1024): THREE.CanvasTexture {
@@ -82,45 +81,7 @@ export function createFringeMaterial(mask: THREE.Texture): THREE.MeshLambertMate
   return material;
 }
 
-/** Folds and creases, as the WebGPU paper has them; see foldShading in paper.wgsl. */
-export type WebGLPaperMaterial = THREE.MeshPhysicalMaterial & {
-  creaseStart: { value: number };
-  folds: readonly { value: THREE.Vector4 }[];
-  contact: readonly { value: THREE.Vector4 }[];
-};
-
-/** paper.wgsl's foldShading, in GLSL. */
-const FOLD_SHADING = /* glsl */ `
-  uniform float creaseStart;
-  uniform vec4 folds[3];
-  uniform vec4 contact[6];
-  vec2 foldShading(vec2 p, float footprint, float facing) {
-    const float STEP = 0.5235988;
-    float r = length(p);
-    float a = atan(p.y, p.x) - creaseStart;
-    a -= floor(a / 6.2831853) * 6.2831853;
-    int k = min(int(a / STEP), 11);
-    int n = (k + 1) % 12;
-    float offset = a - float(k) * STEP;
-    float toNear = r * sin(offset);
-    float toFar = r * sin(STEP - offset);
-
-    float reach = smoothstep(0.01, 0.08, r);
-    float curlWidth = max(0.008, footprint * 2.5);
-    float curl = reach * max(
-      abs(folds[k / 4][k % 4]) * (1.0 - smoothstep(0.0, curlWidth, toNear)),
-      abs(folds[n / 4][n % 4]) * (1.0 - smoothstep(0.0, curlWidth, toFar)));
-
-    vec4 pairs = contact[k / 2];
-    vec2 pair = (k % 2 == 1 ? pairs.zw : pairs.xy) * facing;
-    float spread = max(0.045, footprint * 10.0);
-    float shadowNear = 1.0 - smoothstep(0.0, spread, toNear);
-    float shadowFar = 1.0 - smoothstep(0.0, spread, toFar);
-    float shadow = reach * max(max(pair.x, 0.0) * shadowNear * shadowNear, max(pair.y, 0.0) * shadowFar * shadowFar);
-    return vec2(curl, shadow);
-  }`;
-
-export function createPaperMaterial(mask: THREE.Texture): WebGLPaperMaterial {
+export function createPaperMaterial(mask: THREE.Texture): THREE.MeshPhysicalMaterial {
   const fibres = fibreTexture();
   const tint = fibres.clone();
   tint.colorSpace = THREE.SRGBColorSpace;
@@ -142,30 +103,20 @@ export function createPaperMaterial(mask: THREE.Texture): WebGLPaperMaterial {
 
   // The fibre texture is authored around mid-grey; lift it so `map` only
   // mottles the white rather than darkening it.
-  const creaseStart = { value: 0 };
-  const folds = Array.from({ length: 3 }, () => ({ value: new THREE.Vector4() }));
-  const contact = Array.from({ length: 6 }, () => ({ value: new THREE.Vector4() }));
   material.onBeforeCompile = (shader) => {
-    shader.uniforms.creaseStart = creaseStart;
-    shader.uniforms.folds = { value: folds.map((f) => f.value) };
-    shader.uniforms.contact = { value: contact.map((c) => c.value) };
     shader.uniforms.translucency = { value: 0.55 };
     shader.uniforms.translucencyTint = { value: new THREE.Color("#ffe2b8") };
     shader.fragmentShader = shader.fragmentShader
       .replace(
         "#include <common>",
-        "#include <common>\nuniform float translucency;\nuniform vec3 translucencyTint;\n" + FOLD_SHADING,
+        "#include <common>\nuniform float translucency;\nuniform vec3 translucencyTint;",
       )
       .replace(
         "#include <map_fragment>",
         `#ifdef USE_MAP
           vec4 sampledDiffuseColor = texture2D( map, vMapUv );
           diffuseColor.rgb *= mix( vec3( 0.93 ), vec3( 1.04 ), sampledDiffuseColor.r );
-        #endif
-        vec2 sheetP = vAlphaMapUv * 2.0 - 1.0;
-        float sheetFootprint = length( fwidth( sheetP ) );
-        vec2 folding = foldShading( sheetP, sheetFootprint, gl_FrontFacing ? 1.0 : - 1.0 );
-        diffuseColor.rgb *= ( 1.0 - folding.x * ${CURL_SHADE.toFixed(3)} ) * ( 1.0 - folding.y * ${CONTACT_SHADE.toFixed(3)} );`,
+        #endif`,
       )
       .replace("#include <alphatest_fragment>", CUT_EDGE)
       .replace(
@@ -193,5 +144,5 @@ export function createPaperMaterial(mask: THREE.Texture): WebGLPaperMaterial {
         #endif`,
       );
   };
-  return Object.assign(material, { creaseStart, folds, contact });
+  return material;
 }

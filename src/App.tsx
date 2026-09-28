@@ -668,12 +668,22 @@ export function App() {
         </Environment>
         <ambientLight intensity={0.1} />
         <directionalLight
-          position={[2.2, 2.6, 3.2]}
+          position={[-2.2, 2.6, 3.2]}
           intensity={2.6}
           color="#fff6ea"
           castShadow
           shadow-mapSize={[2048, 2048]}
           shadow-bias={-0.0004}
+          shadow-normalBias={0.002}
+          shadow-radius={3}
+          // Fit the shadow map to the paper, so a flap standing a little
+          // open casts a crisp shadow on the layer under it.
+          shadow-camera-left={-1.6}
+          shadow-camera-right={1.6}
+          shadow-camera-top={1.6}
+          shadow-camera-bottom={-1.6}
+          shadow-camera-near={1}
+          shadow-camera-far={9}
         />
         {/* Behind the paper: what shines through it. */}
         <directionalLight position={[-1, 1.5, -3]} intensity={1.4} color="#ffd7a1" />
